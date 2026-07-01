@@ -2,7 +2,7 @@ source "https://rubygems.org"
 
 ruby file: ".ruby-version"
 
-gem "rails", github: "rails/rails", branch: "main"
+gem "rails", github: "rails/rails", ref: "refs/pull/57825/head"
 
 # Drivers
 gem "sqlite3", "~> 2.9"
@@ -38,6 +38,10 @@ group :development, :test do
   gem "faker", require: false
   gem "brakeman", require: false
   gem "rubocop-rails-omakase", require: false
+end
+
+group :development do
+  gem "web-console"
 end
 
 group :test do

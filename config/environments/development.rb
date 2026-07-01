@@ -8,9 +8,8 @@ Rails.application.configure do
   # since you don't have to restart the web server when you make code changes.
   config.enable_reloading = true
 
-  # Eager load code on boot (Ractor-safety experiment: mirrors production so the
-  # app graph is fully built before any request is served).
-  config.eager_load = true
+  # Do not eager load code on boot.
+  config.eager_load = false
 
   # Show full error reports.
   config.consider_all_requests_local = true
