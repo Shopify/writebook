@@ -118,7 +118,6 @@ GEM
     bcrypt (3.1.22)
     benchmark (0.5.0)
     bigdecimal (4.1.2)
-    bindex (0.8.1)
     brakeman (7.0.2)
       racc
     builder (3.3.0)
@@ -361,11 +360,6 @@ GEM
       concurrent-ruby (~> 1.0)
     unicode-display_width (2.5.0)
     uri (1.1.1)
-    web-console (4.2.1)
-      actionview (>= 6.0.0)
-      activemodel (>= 6.0.0)
-      bindex (>= 0.4.0)
-      railties (>= 6.0.0)
     websocket (1.2.11)
     websocket-driver (0.8.2)
       base64
@@ -410,7 +404,6 @@ DEPENDENCIES
   thruster
   turbo-rails
   useragent!
-  web-console
 
 RUBY VERSION
    ruby 4.0.1p0
