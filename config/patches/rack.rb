@@ -41,6 +41,8 @@ end
 ActiveSupport::Ractors.on_freeze do
   Ractor.make_shareable(Rack::Utils::PATH_SEPS)
   Ractor.make_shareable(Rack::Mime::MIME_TYPES)
+  Ractor.make_shareable(Rack::Files::ALLOWED_VERBS) if defined?(Rack::Files::ALLOWED_VERBS)
+  Ractor.make_shareable(Rack::Files::ALLOW_HEADER) if defined?(Rack::Files::ALLOW_HEADER)
   Ractor.make_shareable(Rack::MethodOverride::ALLOWED_METHODS)
   Ractor.make_shareable(Rack::Headers::KNOWN_HEADERS) if defined?(Rack::Headers::KNOWN_HEADERS)
   Ractor.make_shareable(Rack::Utils::SYMBOL_TO_STATUS_CODE) if defined?(Rack::Utils::SYMBOL_TO_STATUS_CODE)
