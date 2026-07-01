@@ -4,6 +4,9 @@ ruby file: ".ruby-version"
 
 gem "rails", path: "/Users/edouard/src/opensource/rails"
 
+# Ractor experiment: non-main Ractors dispatch DB queries to the main Ractor.
+gem "ractor-dispatch"
+
 # Drivers
 gem "sqlite3", "~> 2.9"
 gem "redis", ">= 4.0.1"

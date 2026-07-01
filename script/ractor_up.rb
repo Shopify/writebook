@@ -16,10 +16,8 @@ main_status, _mh, main_body = Rails.application.call(build_env(PATH))
 main_out = +""; main_body.each { |b| main_out << b }; main_body.close if main_body.respond_to?(:close)
 puts "[main ractor] #{PATH} -> #{main_status}: #{main_out[0, 60]}"
 
-RactorPatches.warm_before_freeze!
 Rails.application.ractorize!
 puts "[ractorize!] OK: Rails.application shareable? #{Ractor.shareable?(Rails.application)}"
-RactorPatches.freeze_runtime_constants!
 
 # Serve the request from inside a Ractor. The env is built inside the Ractor: a
 # Rack env holds non-shareable/non-copyable objects (StringIO, etc.). We build a
