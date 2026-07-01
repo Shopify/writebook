@@ -16,6 +16,8 @@ ActiveSupport::Ractors.before_freeze do
     assets.server
     # Warm the load-path asset scan/caches (assets_by_path, etc.).
     load_path.assets rescue nil
+    # Warm the per-content-type path caches used by stylesheet_link_tag :all etc.
+    %w[css js].each { |type| load_path.asset_paths_by_type(type) rescue nil }
     # Warm the Static resolver's parsed manifest (memoized on the resolver).
     resolver.send(:parsed_manifest) if resolver.respond_to?(:parsed_manifest, true)
   end

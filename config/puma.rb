@@ -6,10 +6,11 @@ environment rails_env
 
 case rails_env
 when "production"
-  workers_count = Integer(ENV.fetch("WEB_CONCURRENCY") { (Concurrent.processor_count * 0.666).ceil })
-  workers workers_count if workers_count > 1
-
-  preload_app!
+  # Ractor-safety experiment: run in single mode (no forked workers, no
+  # preload). ractorize! sets up the Ractor query-dispatch executor and the
+  # Ractor-safe logger's consumer thread in this process; those threads would
+  # not survive Puma's fork, so a clustered worker would deadlock on the first
+  # request that dispatches to the main Ractor.
 when "development"
   worker_timeout 3600 # Don't let worker die during debugger session
 end
