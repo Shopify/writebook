@@ -22,6 +22,7 @@ gem "turbo-rails"
 gem "stimulus-rails"
 
 # Other
+gem "benchmark" # No longer a default gem as of Ruby 4.0; required by mini_magick
 gem "jbuilder"
 gem "redcarpet", "~> 3.6"
 gem "rouge", "~> 4.5"
