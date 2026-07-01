@@ -8,6 +8,7 @@
 # drop the lambda and inline that behavior in #call instead.
 require "rack/files"
 require "rack/head"
+require "active_support/ractors"
 
 module RactorPatches
   module RackFiles
@@ -29,13 +30,15 @@ module RactorPatches
   end
 end
 
-Rack::Files.prepend(RactorPatches::RackFiles)
+ActiveSupport::Ractors.before_freeze do
+  Rack::Files.prepend(RactorPatches::RackFiles)
+end
 
 # Non-main Ractors cannot read constants whose values are not shareable. Several
 # Rack constants hold effectively-immutable objects (e.g. a Regexp built with
 # Regexp.union, the MIME type table) that just happen not to be frozen. Freeze
 # them so the request path can read them from inside a Ractor.
-RactorPatches.freeze_runtime_constants << -> do
+ActiveSupport::Ractors.on_freeze do
   Ractor.make_shareable(Rack::Utils::PATH_SEPS)
   Ractor.make_shareable(Rack::Mime::MIME_TYPES)
   Ractor.make_shareable(Rack::MethodOverride::ALLOWED_METHODS)

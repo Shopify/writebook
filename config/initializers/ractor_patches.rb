@@ -1,83 +1,30 @@
 # frozen_string_literal: true
 
-# Ractor-safety experiment (see script/ractor_up.rb).
+# Ractor-safety experiment.
 #
-# These patches teach gem/framework objects to shed their unshareable state
-# (mutexes, file watchers, self-bound procs, ...) when frozen, so that
-# `Rails.application.ractorize!` (rails/rails#57825) can deep-freeze the whole
-# application graph and share it with a non-main Ractor.
+# The framework (Rails) Ractor patches now live in the Rails fork and are applied
+# by `Rails.application.ractorize!` via ActiveSupport::Ractors' before_freeze /
+# on_freeze callbacks. This file only carries:
 #
-# `Ractor.make_shareable` invokes `#freeze`, so each patch overrides `freeze`
-# to remove/replace the offending state before calling `super`.
-#
-# Some request-path state lives in module *constants* that are not reachable from
-# the application object graph (so `ractorize!` won't freeze them) but which a
-# non-main Ractor must still be able to read. Patches register a callable in
-# `RactorPatches.freeze_runtime_constants`; the harness runs them after boot,
-# right before `ractorize!`.
-module RactorPatches
-  def self.freeze_runtime_constants
-    @freeze_runtime_constants ||= []
-  end
-
-  def self.freeze_runtime_constants!
-    freeze_runtime_constants.each(&:call)
-  end
-
-  # Warmups that must run BEFORE ractorize! freezes the app: they force lazy
-  # memoization onto objects that will be frozen, so a non-main Ractor later
-  # reads the memoized value instead of trying to write it.
-  def self.warmups
-    @warmups ||= []
-  end
-
-  def self.warm_before_freeze!
-    warmups.each(&:call)
-  end
-
-  # Helper for the recurring case of a class-level reader backed by a class
-  # variable (cattr) or class ivar holding an effectively-immutable value.
-  # Class variables can't be read from a non-main Ractor at all, so capture the
-  # value at boot and serve a shareable copy to non-main Ractors.
-  def self.capture_class_reader(mod, name)
-    ivar = :"@_ractor_captured_#{name}"
-    reader = Module.new
-    # Define with a string (not define_method): a method backed by an
-    # unshareable Proc can't be called from a non-main Ractor in Ruby 4.0.
-    reader.module_eval(<<~RUBY, __FILE__, __LINE__ + 1)
-      def #{name}
-        return super if Ractor.main?
-        #{mod.name}.instance_variable_get(:#{ivar})
-      end
-    RUBY
-    mod.singleton_class.prepend(reader)
-    freeze_runtime_constants << -> do
-      value = mod.send(name)
-      shareable = begin
-        Ractor.make_shareable(value.dup)
-      rescue StandardError, TypeError
-        Ractor.make_shareable(value)
-      end
-      mod.instance_variable_set(ivar, shareable)
-    end
-  end
-end
-
-Dir[Rails.root.join("config/patches/*.rb")].sort.each { |file| require file }
-
+#   * patches for non-Rails gems (config/patches/*.rb), which register into the
+#     same ActiveSupport::Ractors callbacks, and
+#   * the Rack bridge that runs each request inside a non-main Ractor.
 require "stringio"
 
 module RactorPatches
+  # Storage for values captured on the main Ractor and served to non-main
+  # Ractors (used by the i18n gem patch).
+  class << self
+    attr_accessor :i18n_default_locale, :i18n_available_locales, :i18n_fallbacks
+  end
+
   # Rack app that runs each request inside a non-main Ractor.
   #
-  # The webserver (Puma) calls #call in the main Ractor. A real Rack env holds
-  # non-shareable, non-copyable objects (the socket IO for rack.input, hijack
-  # procs, puma.* internals), so we can't hand it to a Ractor directly. Instead
-  # we copy the plain (String/Integer/boolean) CGI-style keys, read the body to
-  # a String, and rebuild rack.input/rack.errors inside the Ractor. The Ractor
-  # then invokes the frozen, shareable Rails.application through the full
-  # middleware stack and returns [status, headers, body_string] back across the
-  # boundary.
+  # A real Rack env holds non-shareable, non-copyable objects (the socket IO for
+  # rack.input, hijack procs, puma.* internals), so we copy the plain CGI-style
+  # keys, read the body to a String, and rebuild rack.input/rack.errors inside
+  # the Ractor. The Ractor then invokes the frozen, shareable Rails.application
+  # through the full middleware stack and returns [status, headers, body].
   class Bridge
     def call(env)
       body = (input = env["rack.input"]) ? input.read : ""
@@ -105,3 +52,6 @@ module RactorPatches
     end
   end
 end
+
+# Non-Rails gem patches register their before_freeze/on_freeze callbacks here.
+Dir[Rails.root.join("config/patches/*.rb")].sort.each { |file| require file }

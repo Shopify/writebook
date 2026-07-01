@@ -4,10 +4,8 @@ GIT
   specs:
     useragent (0.16.11)
 
-GIT
-  remote: https://github.com/rails/rails.git
-  revision: c68a11b9fd9c80cb41e40c56688b341c39d89bda
-  ref: refs/pull/57825/head
+PATH
+  remote: /Users/edouard/src/opensource/rails
   specs:
     actioncable (8.2.0.alpha)
       actionpack (= 8.2.0.alpha)

@@ -11,12 +11,9 @@
 # configuration at boot and serve it to non-main Ractors, which is all the
 # inline `/up` response needs (it performs no translation lookups).
 require "i18n"
+require "active_support/ractors"
 
 module RactorPatches
-  class << self
-    attr_accessor :i18n_default_locale, :i18n_available_locales, :i18n_fallbacks
-  end
-
   module I18nConfigRactor
     def default_locale
       return RactorPatches.i18n_default_locale unless Ractor.main?
@@ -40,7 +37,7 @@ end
 I18n::Config.prepend(RactorPatches::I18nConfigRactor)
 I18n.singleton_class.prepend(RactorPatches::I18nModuleRactor)
 
-RactorPatches.freeze_runtime_constants << -> do
+ActiveSupport::Ractors.on_freeze do
   RactorPatches.i18n_default_locale = I18n.default_locale
   RactorPatches.i18n_available_locales = Ractor.make_shareable(I18n.available_locales.dup)
   if I18n.respond_to?(:fallbacks)
