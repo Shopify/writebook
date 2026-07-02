@@ -28,6 +28,32 @@ ActiveSupport::Ractors.on_freeze do
           Ractor.make_shareable(str)
         end
       end
+
+      # Markdown display rendering (html_preview and friends) also goes through
+      # Redcarpet; run it on the main Ractor and bring back the html_safe HTML.
+      def rendered_html(source)
+        return super if Ractor.main?
+
+        src = -source.to_s
+        Ractor::Dispatch.main.run { -Page.preview_renderer.render(src).to_s }
+      end
+    end)
+  end
+
+  # HTML sanitization uses Loofah -> Nokogiri (Ractor-unsafe), so sanitize the
+  # page content on the main Ractor and bring back the html_safe result.
+  if defined?(PagesHelper)
+    PagesHelper.prepend(Module.new do
+      def sanitize_content(content)
+        return super if Ractor.main?
+
+        html = -content.to_s
+        result = Ractor::Dispatch.main.run do
+          sanitized = ApplicationController.helpers.sanitize(html, scrubber: HtmlScrubber.new)
+          Ractor.make_shareable(-sanitized.to_s)
+        end
+        result.html_safe
+      end
     end)
   end
 
