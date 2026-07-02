@@ -36,3 +36,4 @@
 
 # Ignore exported zipfiles
 /*.zip
+crash.log
