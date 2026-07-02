@@ -15,7 +15,7 @@ module RactorPatches
   # Storage for values captured on the main Ractor and served to non-main
   # Ractors (used by the i18n gem patch).
   class << self
-    attr_accessor :i18n_default_locale, :i18n_available_locales, :i18n_fallbacks
+    attr_accessor :i18n_default_locale, :i18n_available_locales, :i18n_fallbacks, :i18n_enforce_available_locales, :i18n_available_locales_set
   end
 
   # Rack app that runs each request inside a non-main Ractor.

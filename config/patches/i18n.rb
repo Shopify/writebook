@@ -24,12 +24,38 @@ module RactorPatches
       return RactorPatches.i18n_available_locales unless Ractor.main?
       super
     end
+
+    def enforce_available_locales
+      return RactorPatches.i18n_enforce_available_locales unless Ractor.main?
+      super
+    end
+
+    def available_locales_set
+      return RactorPatches.i18n_available_locales_set unless Ractor.main?
+      super
+    end
   end
 
   module I18nModuleRactor
     def fallbacks
       return RactorPatches.i18n_fallbacks unless Ractor.main? || RactorPatches.i18n_fallbacks.nil?
       super
+    end
+
+    # Transliteration (used e.g. to build the ASCII Content-Disposition filename
+    # for ActiveStorage blob downloads) goes through the I18n backend, which
+    # holds Procs and can't be shared with a Ractor. It's a leaf string->string
+    # op, so run it on the main Ractor.
+    def transliterate(key, throw: false, replacement: nil, locale: nil, **options)
+      return super if Ractor.main? || !options.empty?
+
+      transliterate_key = -key.to_s
+      transliterate_replacement = replacement ? -replacement.to_s : nil
+      transliterate_locale = locale
+      Ractor::Dispatch.main.run do
+        result = I18n.transliterate(transliterate_key, replacement: transliterate_replacement, locale: transliterate_locale)
+        -result.to_s
+      end
     end
   end
 end
@@ -40,6 +66,8 @@ I18n.singleton_class.prepend(RactorPatches::I18nModuleRactor)
 ActiveSupport::Ractors.on_freeze do
   RactorPatches.i18n_default_locale = I18n.default_locale
   RactorPatches.i18n_available_locales = Ractor.make_shareable(I18n.available_locales.dup)
+  RactorPatches.i18n_enforce_available_locales = I18n.config.enforce_available_locales
+  RactorPatches.i18n_available_locales_set = Ractor.make_shareable(I18n.config.available_locales_set.dup)
   if I18n.respond_to?(:fallbacks)
     fallbacks = I18n.fallbacks
     fallbacks[I18n.default_locale] # warm the default locale entry
