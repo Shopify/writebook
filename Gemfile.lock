@@ -1,11 +1,7 @@
 GIT
-  remote: https://github.com/basecamp/useragent.git
-  revision: 433ca320a42db1266c4b89df74d0abdb9a880c5e
-  specs:
-    useragent (0.16.11)
-
-PATH
-  remote: /Users/edouard/src/opensource/rails
+  remote: https://github.com/Shopify/rails.git
+  revision: 0bdc1bb116e9a73eebffde673d5e17d9342f1b1e
+  branch: writebook-ractorize
   specs:
     actioncable (8.2.0.alpha)
       actionpack (= 8.2.0.alpha)
@@ -103,6 +99,12 @@ PATH
       thor (~> 1.0, >= 1.2.2)
       tsort (>= 0.2)
       zeitwerk (~> 2.6)
+
+GIT
+  remote: https://github.com/basecamp/useragent.git
+  revision: 433ca320a42db1266c4b89df74d0abdb9a880c5e
+  specs:
+    useragent (0.16.11)
 
 GEM
   remote: https://rubygems.org/

@@ -2,7 +2,7 @@ source "https://rubygems.org"
 
 ruby file: ".ruby-version"
 
-gem "rails", path: "/Users/edouard/src/opensource/rails"
+gem "rails", github: "Shopify/rails", branch: "writebook-ractorize"
 
 # Ractor experiment: non-main Ractors dispatch DB queries to the main Ractor.
 gem "ractor-dispatch"
