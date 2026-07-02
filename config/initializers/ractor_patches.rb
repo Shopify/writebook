@@ -41,6 +41,12 @@ module RactorPatches
         ractor_env["rack.errors"] = StringIO.new(+"")
         ractor_env["rack.url_scheme"] ||= "http"
 
+        # Give this Ractor its own (empty) connection handler. DB access is
+        # dispatched to the main Ractor, so this Ractor owns no pools; the empty
+        # handler lets per-request executor hooks (query cache, etc.) run as
+        # no-ops instead of reaching the main Ractor's unshareable handler.
+        ActiveRecord::Base.connection_handler = ActiveRecord::ConnectionAdapters::ConnectionHandler.new
+
         st, hdrs, rack_body = Rails.application.call(ractor_env)
         buffer = +""
         rack_body.each { |chunk| buffer << chunk }
