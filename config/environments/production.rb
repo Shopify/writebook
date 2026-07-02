@@ -65,5 +65,9 @@ Rails.application.configure do
   # Do not dump schema after migrations.
   config.active_record.dump_schema_after_migration = false
 
-  config.active_job.queue_adapter = :resque
+  # Ractor experiment: the upstream app uses Resque (Redis), which isn't part of
+  # this single-process demo. Use the in-process async adapter so ActiveStorage
+  # jobs (metadata sync, analysis) run on the main Ractor's thread pool without
+  # an external broker.
+  config.active_job.queue_adapter = ENV.fetch("QUEUE_ADAPTER", "async").to_sym
 end
