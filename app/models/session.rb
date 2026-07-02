@@ -1,5 +1,7 @@
 class Session < ApplicationRecord
-  ACTIVITY_REFRESH_RATE = 1.hour
+  # Frozen (deep-shareable) so it can be read from a non-main Ractor when
+  # resuming a session on an authenticated request.
+  ACTIVITY_REFRESH_RATE = Ractor.make_shareable(1.hour)
 
   has_secure_token
 
