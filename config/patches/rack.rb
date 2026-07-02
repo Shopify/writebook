@@ -39,18 +39,34 @@ end
 # Regexp.union, the MIME type table) that just happen not to be frozen. Freeze
 # them so the request path can read them from inside a Ractor.
 ActiveSupport::Ractors.on_freeze do
-  Ractor.make_shareable(Rack::Utils::PATH_SEPS)
-  Ractor.make_shareable(Rack::Mime::MIME_TYPES)
-  Ractor.make_shareable(Rack::Files::ALLOWED_VERBS) if defined?(Rack::Files::ALLOWED_VERBS)
-  Ractor.make_shareable(Rack::Files::ALLOW_HEADER) if defined?(Rack::Files::ALLOW_HEADER)
-  Ractor.make_shareable(Rack::MethodOverride::ALLOWED_METHODS)
-  Ractor.make_shareable(Rack::Headers::KNOWN_HEADERS) if defined?(Rack::Headers::KNOWN_HEADERS)
-  Ractor.make_shareable(Rack::Utils::SYMBOL_TO_STATUS_CODE) if defined?(Rack::Utils::SYMBOL_TO_STATUS_CODE)
-  Ractor.make_shareable(Rack::Response::STATUS_WITH_NO_ENTITY_BODY) if defined?(Rack::Response::STATUS_WITH_NO_ENTITY_BODY)
-  Ractor.make_shareable(Rack::Utils::STATUS_WITH_NO_ENTITY_BODY) if defined?(Rack::Utils::STATUS_WITH_NO_ENTITY_BODY)
-  Ractor.make_shareable(Rack::Utils::HTTP_STATUS_CODES) if defined?(Rack::Utils::HTTP_STATUS_CODES)
-  Ractor.make_shareable(Rack::Request::Helpers::FORM_DATA_MEDIA_TYPES)
-  Ractor.make_shareable(Rack::Request::Helpers::PARSEABLE_DATA_MEDIA_TYPES)
+  # Many Rack modules keep effectively-immutable lookup tables / limits /
+  # self-contained lambdas in constants that simply aren't frozen (regexps,
+  # hashes, arrays, the multipart TEMPFILE_FACTORY, query-parser separators,
+  # HTTP method sets, etc.). Recursively make every non-shareable value
+  # constant under the Rack namespace shareable so the request path can read
+  # them from a non-main Ractor. Constants that can't be frozen (e.g. a lambda
+  # closing over an unshareable local) are left as-is.
+  freeze_rack_constants = lambda do |mod, seen|
+    return if seen.include?(mod)
+    seen << mod
+    mod.constants(false).each do |name|
+      value = begin
+        mod.const_get(name)
+      rescue StandardError, LoadError
+        next
+      end
+      if value.is_a?(Module)
+        freeze_rack_constants.call(value, seen) if value.name&.start_with?("Rack")
+      elsif !Ractor.shareable?(value)
+        begin
+          Ractor.make_shareable(value)
+        rescue Ractor::Error, Ractor::IsolationError
+          # e.g. a constant lambda closing over an unshareable local.
+        end
+      end
+    end
+  end
+  freeze_rack_constants.call(Rack, [])
 
   # Rack::Utils.default_query_parser is a class-ivar QueryParser used to parse
   # query/body params on the request path.
