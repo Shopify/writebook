@@ -16,17 +16,18 @@ module Positionable
 
   class_methods do
     def positioned_within(parent, association:, filter:)
-      define_method :positioning_parent do
-        send(parent)
-      end
+      # Define these with Ractor-shareable Procs (they capture only Symbols and
+      # are rebound to the instance by define_method) so the generated methods
+      # can be called from a non-main Ractor.
+      define_method :positioning_parent, &Ractor.shareable_proc { send(parent) }
 
-      define_method :all_positioned_siblings do
+      define_method :all_positioned_siblings, &Ractor.shareable_proc {
         positioning_parent.send(association).send(filter).positioned
-      end
+      }
 
-      define_method :other_positioned_siblings do
+      define_method :other_positioned_siblings, &Ractor.shareable_proc {
         all_positioned_siblings.excluding(self)
-      end
+      }
 
       private :positioning_parent, :all_positioned_siblings, :other_positioned_siblings
     end
