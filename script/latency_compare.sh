@@ -30,14 +30,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "== Ensuring admin user + demo content ==" >&2
-bin/rails runner '
-  u = User.find_or_initialize_by(email_address: ENV["ADMIN_EMAIL"])
-  u.name = "Bench Admin"; u.password = ENV["ADMIN_PASSWORD"]; u.role = :administrator; u.save!
-  Account.first || Account.create!(name: "Writebook")
-  DemoContent.create_manual(u) if Book.count.zero?
-  puts "ready: users=#{User.count} books=#{Book.count} leaves=#{Leaf.count}"
-' 2>/dev/null | grep '^ready:' >&2 || { echo "seed failed" >&2; exit 1; }
+# Reset to an empty DB so GET/POST /first_run is the real onboarding path (the
+# form only renders while there are no users). Full drop/recreate/load-schema.
+reset_db() {
+  DISABLE_DATABASE_ENVIRONMENT_CHECK=1 SECRET_KEY_BASE_DUMMY=1 RAILS_ENV=production \
+    bin/rails db:reset >/dev/null 2>&1 || { echo "db reset failed" >&2; exit 1; }
+}
 
 wait_ready() {
   for _ in $(seq 1 80); do
@@ -49,6 +47,8 @@ wait_ready() {
 
 run_mode() { # $1 = label, $2... = extra env
   local label="$1"; shift
+  echo "== [$label] resetting DB (empty, for /first_run) ==" >&2
+  reset_db
   echo "== [$label] booting server ==" >&2
   rm -f /tmp/lat_server.log
   ( env "$@" bin/rails server -p "$PORT" -b 127.0.0.1 >/tmp/lat_server.log 2>&1 ) &
@@ -67,11 +67,12 @@ run_mode ractor RACTOR_METRICS=1
 
 echo >&2
 ruby - "$OUT" <<'RUBY'
-rows = File.readlines(ARGV[0]).map { |l| l.strip.split(",") }.select { |r| r[0] == "LAT" }
-# LAT,mode,endpoint,ok,p50,p90,p99,max,wall,app,main,worker,disp
+lines = File.readlines(ARGV[0]).map { |l| l.strip.split(",") }
+rows = lines.select { |r| r[0] == "LAT" }   # LAT,mode,ep,ok,p50,p90,p99,max,wall,app,main,worker,disp
+posts = lines.select { |r| r[0] == "POST" }  # POST,mode,ep,ok,ms,wall,app,main,disp
 by = Hash.new { |h, k| h[k] = {} }
 rows.each { |r| by[r[2]][r[1]] = r }
-order = ["/up", "/session/new", "/"]
+order = ["/up", "/first_run", "/"]
 
 puts "Concurrency-1 latency: base (no Ractor) vs ractor  [client-side ms]"
 puts
@@ -95,7 +96,18 @@ order.each do |ep|
   end
   puts
 end
+
+unless posts.empty?
+  puts "POST /first_run  (one-shot write path: account+admin+book+cover+demo, n=1)"
+  printf("%-7s %10s %10s %10s %10s %8s\n", "mode", "total ms", "wall", "app", "main", "disp")
+  posts.each do |r|
+    printf("%-7s %10s %10s %10s %10s %8s   (%s)\n", r[1], r[4], r[5], r[6], r[7], r[8], r[3])
+  end
+  puts
+end
+
 puts "Notes: concurrency 1 (no queueing) -- this is the per-request overhead floor,"
-puts "not the contention story. 'disp' = main-Ractor dispatches/req; 'main' = ms"
+puts "not the contention story. DB reset to empty before each mode so /first_run is"
+puts "the real onboarding path. 'disp' = main-Ractor dispatches/req; 'main' = ms"
 puts "waiting on the main Ractor; 'worker' = app time in the worker Ractor."
 RUBY
