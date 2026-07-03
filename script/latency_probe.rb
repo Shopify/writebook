@@ -98,9 +98,9 @@ def pct(sorted, p)
 end
 def avg(a) = a.empty? ? 0.0 : a.sum / a.size
 
-# main time is split into 2 buckets: db (connection proxy) and other (everything
-# else that must run on main: image analysis/vips, Markdown, sanitize, i18n,
-# jobs). worker = app - all main.
+# main time is split into 2 buckets: db (connection proxy) and other (Ractor-
+# unsafe C-extension work that must run on main: Markdown render/Redcarpet, HTML
+# sanitize/Loofah, image analysis/vips). worker = app - all main.
 def emit(endpoint, total, samples, wall, app, db, oth, disp, ok)
   s = samples.sort
   worker = app.each_with_index.map { |a, i| a - ((db[i] || 0) + (oth[i] || 0)) }

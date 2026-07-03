@@ -28,8 +28,9 @@ module RactorPatches
   # number of dispatches. All DB/render/etc. work funnels through Executor#run.
   module ExecutorMetrics
     # Categorize each main-Ractor dispatch by its caller and accumulate its wall
-    # time (thread-local) into DB (connection proxy) vs other (everything else
-    # that must run on main: image analysis/vips, Markdown, sanitize, i18n, jobs).
+    # time (thread-local) into DB (connection proxy) vs other (Ractor-unsafe
+    # C-extension work on main: Markdown/Redcarpet, HTML sanitize/Loofah,
+    # image analysis/vips).
     def run(&block)
       db  = caller_locations(1, 8).any? { |l| l.path.include?("active_record/ractor_patches") }
       key = db ? :rz_db_ns : :rz_oth_ns

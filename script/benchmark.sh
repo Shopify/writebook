@@ -215,7 +215,7 @@ order.each do |ep|
   puts
 end
 puts "  #{c("db", 32)}#{" " * 4} ms on the main Ractor: DB / connection calls"
-puts "  #{c("other", 36)}#{" " * 1} ms on the main Ractor: image analysis (vips) / Markdown / sanitize / i18n / jobs (Ractor-unsafe C exts)"
+puts "  #{c("other", 36)}#{" " * 1} ms on the main Ractor: Markdown rendering (Redcarpet C ext), HTML sanitize (Loofah unsafe), image analysis (vips unsafe)"
 puts "  worker ms running the app in the worker Ractor"
 RUBY
 }
