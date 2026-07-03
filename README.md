@@ -60,7 +60,7 @@ All optional, via environment variables:
 | var | default | meaning |
 |-----|---------|---------|
 | `BOOT_RUNS` | `5` | boots per configuration (BOOT phase) |
-| `N` | `150` | requests per GET endpoint (LATENCY phase) |
+| `N` | `2000` | requests per GET endpoint (LATENCY phase; high so p99 is stable) |
 | `WARMUP` | `40` | warmup requests per endpoint |
 | `N_POST` | `15` | `POST /first_run` samples |
 | `POST_WARMUP` | `3` | warmup POSTs |
