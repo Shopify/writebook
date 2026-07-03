@@ -67,18 +67,17 @@ run_mode ractor RACTOR_METRICS=1
 
 echo >&2
 ruby - "$OUT" <<'RUBY'
-lines = File.readlines(ARGV[0]).map { |l| l.strip.split(",") }
-rows = lines.select { |r| r[0] == "LAT" }   # LAT,mode,ep,ok,p50,p90,p99,max,wall,app,main,worker,disp
-posts = lines.select { |r| r[0] == "POST" }  # POST,mode,ep,ok,ms,wall,app,main,disp
+rows = File.readlines(ARGV[0]).map { |l| l.strip.split(",") }.select { |r| r[0] == "LAT" }
+# LAT,mode,endpoint,ok/total,p50,p90,p99,max,wall,app,main,worker,disp
 by = Hash.new { |h, k| h[k] = {} }
 rows.each { |r| by[r[2]][r[1]] = r }
-order = ["/up", "/first_run", "/"]
+order = ["/up", "/first_run", "POST /first_run", "/"]
 
 puts "Concurrency-1 latency: base (no Ractor) vs ractor  [client-side ms]"
 puts
-printf("%-14s %-7s %8s %8s %8s %8s %9s %8s %9s\n",
-       "endpoint", "mode", "p50", "p90", "p99", "max", "disp", "main", "worker")
-printf("%s\n", "-" * 84)
+printf("%-16s %-7s %8s %8s %8s %8s %9s %9s %9s  %s\n",
+       "endpoint", "mode", "p50", "p90", "p99", "max", "disp", "main", "worker", "n")
+printf("%s\n", "-" * 92)
 order.each do |ep|
   next unless by.key?(ep)
   %w[base ractor].each do |m|
@@ -86,28 +85,19 @@ order.each do |ep|
     disp = m == "ractor" ? r[12] : "-"
     main = m == "ractor" ? r[10] : "-"
     wrk  = m == "ractor" ? r[11] : "-"
-    printf("%-14s %-7s %8s %8s %8s %8s %9s %8s %9s\n", ep, m, r[4], r[5], r[6], r[7], disp, main, wrk)
+    printf("%-16s %-7s %8s %8s %8s %8s %9s %9s %9s  %s\n", ep, m, r[4], r[5], r[6], r[7], disp, main, wrk, r[3])
   end
   b = by[ep]["base"]; x = by[ep]["ractor"]
-  if b && x
+  if b && x && b[4].to_f > 0
     d = x[4].to_f - b[4].to_f
-    printf("%-14s %-7s p50 %+.2f ms (%+.1f%%)   [server wall %s ms, app %s ms]\n",
+    printf("%-16s %-7s p50 %+.2f ms (%+.1f%%)   [server wall %s ms, app %s ms]\n",
            "", "delta", d, (d / b[4].to_f * 100), x[8], x[9])
   end
   puts
 end
-
-unless posts.empty?
-  puts "POST /first_run  (one-shot write path: account+admin+book+cover+demo, n=1)"
-  printf("%-7s %10s %10s %10s %10s %8s\n", "mode", "total ms", "wall", "app", "main", "disp")
-  posts.each do |r|
-    printf("%-7s %10s %10s %10s %10s %8s   (%s)\n", r[1], r[4], r[5], r[6], r[7], r[8], r[3])
-  end
-  puts
-end
-
-puts "Notes: concurrency 1 (no queueing) -- this is the per-request overhead floor,"
-puts "not the contention story. DB reset to empty before each mode so /first_run is"
-puts "the real onboarding path. 'disp' = main-Ractor dispatches/req; 'main' = ms"
-puts "waiting on the main Ractor; 'worker' = app time in the worker Ractor."
+puts "Notes: concurrency 1 (no queueing) -- per-request overhead floor, not the"
+puts "contention story. GET /first_run = setup form (empty DB); POST /first_run ="
+puts "the write path, with the DB wiped before each sample (n small, heavy request)."
+puts "'disp' = main-Ractor dispatches/req; 'main' = ms on the main Ractor; 'worker' ="
+puts "app time in the worker Ractor."
 RUBY
