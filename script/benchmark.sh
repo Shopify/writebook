@@ -112,23 +112,27 @@ abort "no successful boot runs" if base.empty? || exp.empty?
 def med(xs) = (s = xs.sort; s.size.odd? ? s[s.size/2] : (s[s.size/2-1]+s[s.size/2])/2.0)
 def col(rows, i) = rows.map { |r| r[i] }
 def b(s) = $stdout.tty? ? "\e[1m#{s}\e[0m" : s.to_s
+def c(s, code) = $stdout.tty? ? "\e[#{code}m#{s}\e[0m" : s.to_s
+WARMING = 33; SHAREABLE = 32; ONFREEZE = 36 # yellow / green / teal
 b_boot = med(col(base,0)); b_rss = med(col(base,6))
-e_boot = med(col(exp,0));  e_rss = med(col(exp,6))
 e_full = med(exp.map { |r| r[0]+r[2] }); e_rss2 = med(col(exp,7))
-e_rz = med(col(exp,2)); e_bf = med(col(exp,3)); e_gf = med(col(exp,4)); e_on = med(col(exp,5))
+e_bf = med(col(exp,3)); e_gf = med(col(exp,4)); e_on = med(col(exp,5))
+delta = e_full - b_boot
 n = [base.size, exp.size].min
-printf("Boot comparison (median of %d boots/side, production)\n\n", n)
-printf("%-42s %10s %10s\n", "", "boot ms", "RSS MB")
-printf("%-42s %10s %10s\n", "-"*42, "-"*10, "-"*10)
-printf("%-42s %10.1f %10.1f\n", "baseline (main, no Ractor code)", b_boot, b_rss)
-printf("%-42s %10.1f %10.1f\n", "experiment, base only (no ractorize!)", e_boot, e_rss)
-printf("%-42s %10.1f %10.1f\n", "experiment, full (+ ractorize!)", e_full, e_rss2)
+printf("Boot time: before vs after the experiment (median of %d boots/side, production)\n\n", n)
+printf("%-30s %10s %10s\n", "", "boot ms", "RSS MB")
+printf("%-30s %10s %10s\n", "-"*30, "-"*10, "-"*10)
+printf("%-30s %10.1f %10.1f\n", "before (main, no Ractor)", b_boot, b_rss)
+printf("%-30s %10.1f %10.1f\n", "after  (+ ractorize!)", e_full, e_rss2)
 puts
-printf("ractorize! delta (server-only) : %s (%+.1f%%), RSS %+.1f MB\n",
-       b(sprintf("%+.1f ms", e_rz)), e_rz/e_boot*100, e_rss2-e_rss)
-printf("  Force memoized values (warming up)  : %8.1f ms\n", e_bf)
-printf("  graph_freeze (make_shareable)       : %8.1f ms\n", e_gf)
-printf("  on_freeze (incompatible libraries)  : %8.1f ms\n", e_on)
+printf("Cost of the experiment: %s, RSS %+.1f MB\n",
+       b(sprintf("%+.1f ms (%+.1f%%)", delta, delta / b_boot * 100)), e_rss2 - b_rss)
+printf("  ~all one-time ractorize!:  %s %.1f  /  %s %.1f  /  %s %.1f ms\n",
+       c("warming", WARMING), e_bf, c("make_shareable", SHAREABLE), e_gf, c("on_freeze", ONFREEZE), e_on)
+puts
+puts "  #{c("warming", WARMING)}#{" " * 7} force lazily-memoized state (reflections, schema, url helpers) up-front so it can be frozen"
+puts "  #{c("make_shareable", SHAREABLE)} deep-freeze the whole application object graph so Ractors can share it"
+puts "  #{c("on_freeze", ONFREEZE)}#{" " * 5} freeze gem/framework state outside the graph + recompile callback chains as shareable procs"
 RUBY
 
   # Free the worktree before phase 2.
@@ -186,19 +190,20 @@ by = Hash.new { |h, k| h[k] = {} }
 rows.each { |r| by[r[2]][r[1]] = r }
 order = ["/up", "/first_run", "POST /first_run", "/"]
 def bold(s) = $stdout.tty? ? "\e[1m#{s}\e[0m" : s.to_s
+def c(s, code) = $stdout.tty? ? "\e[#{code}m#{s}\e[0m" : s.to_s
 puts "Concurrency-1 latency: base (no Ractor) vs ractor  [client-side ms]"
 puts
-printf("%-16s %-7s %8s %8s %9s %9s %9s\n",
-       "endpoint", "mode", "p50", "p99", "disp/req", "main", "worker")
-printf("%s\n", "-"*72)
+printf("%-16s %-7s %8s %8s %s %s\n",
+       "endpoint", "mode", "p50", "p99",
+       c(sprintf("%9s", "main"), 32), c(sprintf("%9s", "worker"), 36))
+printf("%s\n", "-"*62)
 order.each do |ep|
   next unless by.key?(ep)
   %w[base ractor].each do |m|
     r = by[ep][m] or next
-    disp = m == "ractor" ? r[12] : "-"
     main = m == "ractor" ? r[10] : "-"
     wrk  = m == "ractor" ? r[11] : "-"
-    printf("%-16s %-7s %s %8s %9s %9s %9s\n", ep, m, bold(sprintf("%8s", r[4])), r[6], disp, main, wrk)
+    printf("%-16s %-7s %s %8s %9s %9s\n", ep, m, bold(sprintf("%8s", r[4])), r[6], main, wrk)
   end
   b = by[ep]["base"]; x = by[ep]["ractor"]
   if b && x && b[4].to_f > 0
@@ -208,7 +213,8 @@ order.each do |ep|
   end
   puts
 end
-puts "(ractor cols) disp = work dispatched to the main Ractor per request; main/worker = ms spent on main / in the worker Ractor"
+puts "  #{c("main", 32)}#{" " * 2} ms spent on the main Ractor (waiting on dispatched work)"
+puts "  #{c("worker", 36)} ms spent running the app in the worker Ractor"
 RUBY
 }
 
