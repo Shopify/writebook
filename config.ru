@@ -21,6 +21,20 @@ Rails.application.load_server
 # ractorize! applies the framework Ractor patches, warms lazily-memoized state,
 # deep-freezes the whole application graph, and freezes/shares the remaining
 # request-path state (see ActiveSupport::Ractors before_freeze/on_freeze).
-Rails.application.ractorize! unless Rails.application.frozen?
+if ENV["RACTOR_MODE"] == "0"
+  # Benchmark baseline: serve normally, without ractorize! or the Ractor bridge,
+  # so the app runs on the main Ractor exactly like an unmodified deploy. Lets
+  # script/latency_compare.sh A/B the same build with and without Ractors.
+  run Rails.application
+else
+  # Opt-in per-request timing instrumentation (RACTOR_METRICS=1). Prepend before
+  # ractorize! freezes the graph.
+  if RactorPatches.metrics?
+    require "ractor/dispatch"
+    Ractor::Dispatch::Executor.prepend(RactorPatches::ExecutorMetrics)
+  end
 
-run RactorPatches::Bridge.new
+  Rails.application.ractorize! unless Rails.application.frozen?
+
+  run RactorPatches::Bridge.new
+end
