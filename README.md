@@ -1,45 +1,68 @@
-# Writebook
+# Writebook — Ractor experiment
 
-### Instantly publish your own books on the web for free, no publisher required.
+This is a fork of [Writebook](https://github.com/basecamp/writebook) used as an
+experiment: **can an existing, real-world Rails application serve HTTP requests
+from inside a non-main Ractor?**
 
-Writebook is an easy-to-use application for publishing content on the web.
-Content is authored in Markdown, and books can contain picture pages, chapters, and title pages.
-Books can be published privately or publicly, and are searchable.
+Each request runs in its own worker Ractor while the application graph is frozen
+and shared. Work that can't (yet) run off the main Ractor — database access,
+image processing, Markdown/HTML rendering — is dispatched back to the main
+Ractor. Most of the changes that make this possible live in a companion **Rails
+fork** ([`Shopify/rails`, branch `writebook-ractorize`](https://github.com/Shopify/rails/tree/writebook-ractorize)),
+which the `Gemfile` points at; the app itself carries only a thin Rack bridge
+(`config/initializers/ractor_patches.rb`), a handful of gem shims
+(`config/patches/*.rb`), and the benchmark scripts.
 
-## How to get Writebook
+The goal at this stage is **not** to show that Ractor serving is faster, but to
+show it works and has **no meaningful negative performance impact** so far.
 
-Writebook is distributed as a Docker image.
-The simplest way to install and run it is by using [ONCE](https://github.com/basecamp/once).
+## How it works, briefly
 
-To get started, paste this snippet into a terminal on the machine where you want to install Writebook:
+- `config.ru` freezes and shares the whole application (`ractorize!`) and serves
+  every request through `RactorPatches::Bridge`, which spawns a worker Ractor per
+  request. Setting `RACTOR_MODE=0` disables this and serves the app normally, on
+  the main Ractor — used as the benchmark baseline.
+- DB / image / render work is sent to the main Ractor via `Ractor::Dispatch`.
+- With `RACTOR_METRICS=1`, each response carries `x-rz-*` timing headers used by
+  the benchmark.
 
-```sh
-curl https://get.once.com/writebook | sh
-```
-
-## Deploying manually with Docker
-
-If you'd rather set the Docker image up yourself, you can use `docker run` or `docker compose` to do that.
-The official image is `ghcr.io/basecamp/writebook`.
-
-You'll need to route the incoming web traffic to ports 80 and 443 (or just 80 if you run without SSL).
-To persist the storage of the application, mount a Docker volume to `/rails/storage`.
-
-You can configure the SSL setting with the following environment variables:
-
-- `SSL_DOMAIN` - enable automatic SSL via Let's Encrypt for the given domain name
-- `DISABLE_SSL` - alternatively, set `DISABLE_SSL` to serve over plain HTTP
-
-## Running in development
-
-Install dependencies:
+## Running the benchmark
 
 ```sh
-bin/setup
+git clone --branch ec-ractor-safe https://github.com/Shopify/writebook.git
+cd writebook
+
+chruby 4.0.1
+bundle install
+RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 DISABLE_SSL=1 bin/rails assets:precompile
+
+script/benchmark.sh
 ```
 
-Start the development server:
+### What it reports
 
-```sh
-bin/dev
-```
+`script/benchmark.sh` runs two phases and prints both:
+
+1. **BOOT** — boot time and memory for three configurations: the pre-Ractor
+   `main` baseline (in a throwaway git worktree), the experiment without
+   `ractorize!`, and the experiment with `ractorize!`. Shows the one-time cost
+   the Ractor machinery adds at boot.
+2. **LATENCY** — concurrency-1 latency (p50/p90/p99) of the same build served
+   with Ractors vs without (`RACTOR_MODE=0`), across a gradient of endpoints:
+   `/up` (no DB), `GET /first_run` (render), `POST /first_run` (the write path),
+   and the authenticated `/` (real read path). Ractor rows also show the per-
+   request main-Ractor time and dispatch count.
+
+### Configuration
+
+All optional, via environment variables:
+
+| var | default | meaning |
+|-----|---------|---------|
+| `BOOT_RUNS` | `5` | boots per configuration (BOOT phase) |
+| `N` | `150` | requests per GET endpoint (LATENCY phase) |
+| `WARMUP` | `40` | warmup requests per endpoint |
+| `N_POST` | `15` | `POST /first_run` samples |
+| `POST_WARMUP` | `3` | warmup POSTs |
+| `PORT` | `3998` | port the benchmark server listens on |
+| `SKIP_BOOT` / `SKIP_LATENCY` | – | set to `1` to skip a phase |
