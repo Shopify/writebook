@@ -13,10 +13,14 @@
 # Reads x-rz-* headers (Ractor mode w/ RACTOR_METRICS) to split server time into
 # worker vs main-Ractor and dispatch count.
 #
-# Env: HOST PORT MODE N WARMUP N_POST POST_WARMUP DB_PATH ADMIN_EMAIL ADMIN_PASSWORD
+# Env: HOST PORT MODE N WARMUP N_POST POST_WARMUP ADMIN_EMAIL ADMIN_PASSWORD
 # Output (ms): LAT,<mode>,<endpoint>,<ok>/<total>,<p50>,<p90>,<p99>,<max>,<wall>,<app>,<main>,<worker>,<disp>
 require "net/http"
-require "shellwords"
+# Boot the app once (in THIS probe process, not the server) so we can wipe
+# records between POST /first_run iterations via ActiveRecord -- cheap after the
+# one-time boot, and correct at the model layer (vs raw SQL). Never ractorizes
+# (that only happens in config.ru), so it's a plain AR connection to the same DB.
+require_relative "../config/environment"
 
 HOST        = ENV.fetch("HOST", "127.0.0.1")
 PORT        = Integer(ENV.fetch("PORT", "3998"))
@@ -25,30 +29,26 @@ N           = Integer(ENV.fetch("N", "200"))
 WARMUP      = Integer(ENV.fetch("WARMUP", "40"))
 N_POST      = Integer(ENV.fetch("N_POST", "20"))
 POST_WARMUP = Integer(ENV.fetch("POST_WARMUP", "3"))
-DB_PATH     = ENV.fetch("DB_PATH", "storage/db/production.sqlite3")
 EMAIL       = ENV.fetch("ADMIN_EMAIL", "admin@example.com")
 PASSWORD    = ENV.fetch("ADMIN_PASSWORD", "secret123456")
 UA          = "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149 Safari/537.36"
 
-# App tables to clear between POST /first_run iterations (foreign_keys OFF, so
-# order doesn't matter; intersected with the tables that actually exist).
-APP_TABLES = %w[
-  accesses sessions leaves pages sections pictures books accounts users
-  active_storage_attachments active_storage_blobs active_storage_variant_records
-  action_text_rich_texts leaf_search_index
-].freeze
+# Deleted (children-ish first, and with FKs off) to make /first_run available
+# again (User.any? => false). delete_all skips callbacks -- fine for a wipe.
+RESET_MODELS = %w[
+  ActiveStorage::Attachment ActiveStorage::VariantRecord ActiveStorage::Blob
+  ActionText::RichText Access Session Leaf Page Section Picture Book Account User
+].filter_map { |n| n.safe_constantize }
 
 def now = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-# Wipe app rows directly via the sqlite3 CLI (fast; server is idle between the
-# sequential requests). Makes /first_run available again (User.any? => false).
 def reset_db!
-  existing = `sqlite3 #{DB_PATH.shellescape} ".tables" 2>/dev/null`.split
-  tables = APP_TABLES & existing
-  return if tables.empty?
-  sql = +"PRAGMA busy_timeout=5000;\nPRAGMA foreign_keys=OFF;\n"
-  tables.each { |t| sql << "DELETE FROM #{t};\n" }
-  IO.popen(["sqlite3", DB_PATH], "w") { |io| io.write(sql) }
+  conn = ActiveRecord::Base.connection
+  conn.execute("PRAGMA foreign_keys=OFF")
+  RESET_MODELS.each { |m| m.delete_all if m.table_exists? }
+  conn.execute("DELETE FROM leaf_search_index") rescue nil
+ensure
+  conn.execute("PRAGMA foreign_keys=ON") rescue nil
 end
 
 $cookies = {}
