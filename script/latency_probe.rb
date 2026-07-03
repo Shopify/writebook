@@ -98,40 +98,40 @@ def pct(sorted, p)
 end
 def avg(a) = a.empty? ? 0.0 : a.sum / a.size
 
-# main time is split into 3 buckets: db (connection proxy), image (ActiveStorage
-# vips analysis), other (Markdown/sanitize/i18n/jobs). worker = app - all main.
-def emit(endpoint, total, samples, wall, app, db, img, oth, disp, ok)
+# main time is split into 2 buckets: db (connection proxy) and other (everything
+# else that must run on main: image analysis/vips, Markdown, sanitize, i18n,
+# jobs). worker = app - all main.
+def emit(endpoint, total, samples, wall, app, db, oth, disp, ok)
   s = samples.sort
-  worker = app.each_with_index.map { |a, i| a - ((db[i] || 0) + (img[i] || 0) + (oth[i] || 0)) }
+  worker = app.each_with_index.map { |a, i| a - ((db[i] || 0) + (oth[i] || 0)) }
   puts [
     "LAT", MODE, endpoint, "#{ok}/#{total}",
     pct(s, 50).round(2), pct(s, 90).round(2), pct(s, 99).round(2), s.last.round(2),
     avg(wall).round(2), avg(app).round(2),
-    avg(db).round(2), avg(img).round(2), avg(oth).round(2), avg(worker).round(2),
+    avg(db).round(2), avg(oth).round(2), avg(worker).round(2),
     avg(disp).round(1)
   ].join(",")
 end
 
-def collect(r, wall, app, db, img, oth, disp)
+def collect(r, wall, app, db, oth, disp)
   wall << r["x-rz-wall"].to_f       if r["x-rz-wall"]
   app  << r["x-rz-app"].to_f        if r["x-rz-app"]
   db   << r["x-rz-main-db"].to_f    if r["x-rz-main-db"]
-  img  << r["x-rz-main-image"].to_f if r["x-rz-main-image"]
   oth  << r["x-rz-main-other"].to_f if r["x-rz-main-other"]
   disp << r["x-rz-dispatches"].to_f if r["x-rz-dispatches"]
 end
 
 def measure_get(http, path)
   WARMUP.times { get(http, path) }
-  client = []; wall = []; app = []; db = []; img = []; oth = []; disp = []; ok = 0
+  client = []; wall = []; app = []; db = []; oth = []; disp = []; ok = 0
   N.times do
     t = now
     r = get(http, path)
     client << (now - t) * 1000
     ok += 1 if r.code.to_i < 400
-    collect(r, wall, app, db, img, oth, disp)
+    collect(r, wall, app, db, oth, disp)
   end
-  emit(path, N, client, wall, app, db, img, oth, disp, ok)
+  emit(path, N, client, wall, app, db, oth, disp, ok)
 end
 
 http = Net::HTTP.new(HOST, PORT)
@@ -146,15 +146,15 @@ measure_get(http, "/first_run")
 
 # POST /first_run x N_POST, DB wiped before each so it does real work every time.
 POST_WARMUP.times { post_first_run(http) }
-client = []; wall = []; app = []; db = []; img = []; oth = []; disp = []; ok = 0
+client = []; wall = []; app = []; db = []; oth = []; disp = []; ok = 0
 N_POST.times do
   resp, ms = post_first_run(http)
   client << ms
   ok += 1 if [301, 302, 303].include?(resp.code.to_i)
-  collect(resp, wall, app, db, img, oth, disp)
+  collect(resp, wall, app, db, oth, disp)
 end
 warn "[#{MODE}] POST /first_run: only #{ok}/#{N_POST} succeeded" unless ok == N_POST
-emit("POST /first_run", N_POST, client, wall, app, db, img, oth, disp, ok)
+emit("POST /first_run", N_POST, client, wall, app, db, oth, disp, ok)
 
 # Authenticated library, via the session cookie from the last successful POST.
 measure_get(http, "/")

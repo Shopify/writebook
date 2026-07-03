@@ -193,19 +193,18 @@ def bold(s) = $stdout.tty? ? "\e[1m#{s}\e[0m" : s.to_s
 def c(s, code) = $stdout.tty? ? "\e[#{code}m#{s}\e[0m" : s.to_s
 puts "Concurrency-1 latency: base (no Ractor) vs ractor  [client-side ms]"
 puts
-printf("%-16s %-7s %8s %8s %s %s %s %8s\n",
+printf("%-16s %-7s %8s %8s %s %s %8s\n",
        "endpoint", "mode", "p50", "p99",
-       c(sprintf("%8s", "db"), 32), c(sprintf("%8s", "image"), 33), c(sprintf("%8s", "other"), 36), "worker")
-printf("%s\n", "-"*78)
+       c(sprintf("%8s", "db"), 32), c(sprintf("%8s", "other"), 36), "worker")
+printf("%s\n", "-"*70)
 order.each do |ep|
   next unless by.key?(ep)
   %w[base ractor].each do |m|
     r = by[ep][m] or next
     db  = m == "ractor" ? r[10] : "-"
-    img = m == "ractor" ? r[11] : "-"
-    oth = m == "ractor" ? r[12] : "-"
-    wrk = m == "ractor" ? r[13] : "-"
-    printf("%-16s %-7s %s %8s %8s %8s %8s %8s\n", ep, m, bold(sprintf("%8s", r[4])), r[6], db, img, oth, wrk)
+    oth = m == "ractor" ? r[11] : "-"
+    wrk = m == "ractor" ? r[12] : "-"
+    printf("%-16s %-7s %s %8s %8s %8s %8s\n", ep, m, bold(sprintf("%8s", r[4])), r[6], db, oth, wrk)
   end
   b = by[ep]["base"]; x = by[ep]["ractor"]
   if b && x && b[4].to_f > 0
@@ -216,8 +215,7 @@ order.each do |ep|
   puts
 end
 puts "  #{c("db", 32)}#{" " * 4} ms on the main Ractor: DB / connection calls"
-puts "  #{c("image", 33)}#{" " * 1} ms on the main Ractor: ActiveStorage image analysis (ruby-vips)"
-puts "  #{c("other", 36)}#{" " * 1} ms on the main Ractor: Markdown / sanitize / i18n / jobs (Ractor-unsafe C exts)"
+puts "  #{c("other", 36)}#{" " * 1} ms on the main Ractor: image analysis (vips) / Markdown / sanitize / i18n / jobs (Ractor-unsafe C exts)"
 puts "  worker ms running the app in the worker Ractor"
 RUBY
 }

@@ -28,17 +28,11 @@ module RactorPatches
   # number of dispatches. All DB/render/etc. work funnels through Executor#run.
   module ExecutorMetrics
     # Categorize each main-Ractor dispatch by its caller and accumulate its wall
-    # time (thread-local) into one of: DB (connection proxy), ActiveStorage image
-    # analysis (ruby-vips), or everything else (Markdown/sanitize/i18n/jobs).
+    # time (thread-local) into DB (connection proxy) vs other (everything else
+    # that must run on main: image analysis/vips, Markdown, sanitize, i18n, jobs).
     def run(&block)
-      locs = caller_locations(1, 8)
-      key = if locs.any? { |l| l.path.include?("active_record/ractor_patches") }
-              :rz_db_ns
-            elsif locs.any? { |l| l.base_label == "extract_metadata_via_analyzer" }
-              :rz_img_ns
-            else
-              :rz_oth_ns
-            end
+      db  = caller_locations(1, 8).any? { |l| l.path.include?("active_record/ractor_patches") }
+      key = db ? :rz_db_ns : :rz_oth_ns
       t = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
       result = super
       Thread.current[key]            = (Thread.current[key] || 0) + (Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond) - t)
@@ -89,7 +83,6 @@ module RactorPatches
           app_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - app_start) * 1000
           h["x-rz-app"]        = app_ms.round(3).to_s
           h["x-rz-main-db"]    = ((Thread.current[:rz_db_ns]  || 0) / 1_000_000.0).round(3).to_s
-          h["x-rz-main-image"] = ((Thread.current[:rz_img_ns] || 0) / 1_000_000.0).round(3).to_s
           h["x-rz-main-other"] = ((Thread.current[:rz_oth_ns] || 0) / 1_000_000.0).round(3).to_s
           h["x-rz-dispatches"] = (Thread.current[:rz_main_count] || 0).to_s
         end
