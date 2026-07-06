@@ -57,9 +57,10 @@ script/benchmark.sh
 
 `script/benchmark.sh` runs two phases and prints both:
 
-1. **BOOT** — boot time and memory **before vs after `ractorize!`** on the same
-   build (`boot_delta.rb` splits one boot into base boot + the one-time
-   `ractorize!` cost). Shows the one-time cost the Ractor machinery adds at boot.
+1. **BOOT** — boot time and memory of the **`ec-baseline` branch** (vanilla
+   Writebook, no Ractor) vs **HEAD + `ractorize!`** — the true one-time cost of
+   the experiment. Worktrees the baseline branch and boots each side `BOOT_RUNS`
+   times (override with `BASELINE_BRANCH`).
 2. **LATENCY** — concurrency-1 latency (p50/p90/p99) of the same build served
    with Ractors vs without (`RACTOR_MODE=0`), across a gradient of endpoints:
    `/up` (no DB), `GET /first_run` (render), `POST /first_run` (the write path),
@@ -83,11 +84,12 @@ All optional, via environment variables:
 ## Memory-saturation benchmark
 
 This is the headline comparison: the memory needed to **saturate N cores** two
-ways — a Puma **cluster** (N worker processes, the traditional way to use N cores
-on CRuby) versus a single-process **Ractor pool** (N worker Ractors sharing one
-frozen heap) — while both serve the same concurrent authenticated `GET /` load.
-Like the boot/latency benchmark it runs on Ruby master (see
-[Ruby version](#ruby-version)):
+ways — a Puma **cluster** running the **`ec-baseline` branch** (vanilla Writebook,
+N worker processes — the traditional way to use N cores on CRuby) versus a
+single-process **Ractor pool** (this build, N worker Ractors sharing one frozen
+heap) — while both serve the same concurrent authenticated `GET /` load. The
+script manages the baseline worktree itself. Like the boot/latency benchmark it
+runs on Ruby master (see [Ruby version](#ruby-version)):
 
 ```sh
 RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 DISABLE_SSL=1 bin/rails assets:precompile

@@ -1,65 +1,90 @@
 #!/usr/bin/env bash
-# Memory-to-saturate-N-cores: Puma cluster (N processes) vs Ractor pool (1
-# process, N worker Ractors), both serving the same concurrent authenticated
-# GET / load on the same Ruby.
+# Memory-to-saturate-N-cores: Puma cluster vs Ractor pool, both serving the same
+# concurrent authenticated GET / load on the same Ruby.
 #
-#   Puma cluster : PUMA_WORKERS=N, RAILS_MAX_THREADS=1, RACTOR_MODE=0 (normal app)
-#   Ractor pool  : RACTOR_POOL=N,  RAILS_MAX_THREADS=N, RACTOR_MODE=1 (single proc)
+#   Puma cluster : the ec-baseline branch (vanilla Writebook, no Ractor) in a
+#                  worktree, WEB_CONCURRENCY=N processes, RAILS_MAX_THREADS=1.
+#   Ractor pool  : this build (HEAD), 1 process, RACTOR_POOL=N worker Ractors,
+#                  RAILS_MAX_THREADS=N, RACTOR_MODE=1.
 #
 # Reports peak RSS under load + throughput for each, and the memory gain.
-# Requires: a booted ruby env (source it first) with the app bundle installed,
-# and precompiled assets. Usage:  script/memory_saturation.sh [N ...]   (default: 1 2 4 8)
+# Requires Ruby master (see README). Manages its own baseline worktree.
+# Usage:  script/memory_saturation.sh [N ...]           (default: 1 2 4 8)
 set -euo pipefail
-cd "$(dirname "$0")/.."
+APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"; cd "$APP_DIR"
 
 PORT="${PORT:-3996}"
 LOAD_SECS="${LOAD_SECS:-10}"
 SWEEP="${*:-1 2 4 8}"
+BASELINE_BRANCH="${BASELINE_BRANCH:-ec-baseline}"
 export RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 DISABLE_SSL=1
 UA="Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149 Safari/537.36"
-COOKIE_FILE=/tmp/mem_cookie.txt
+COOKIE_BASE=/tmp/mem_cookie_base.txt   # cluster (vanilla worktree)
+COOKIE_POOL=/tmp/mem_cookie_pool.txt   # pool (experiment / HEAD)
 tmpout=$(mktemp)
+WT="" ; WT_PARENT=""
 
 kill_port() { lsof -ti tcp:"$PORT" 2>/dev/null | xargs -r kill -9 2>/dev/null || true; sleep 1; }
-wait_up() { for _ in $(seq 1 90); do curl -s -o /dev/null -H "User-Agent: $UA" "http://127.0.0.1:$PORT/up" 2>/dev/null && return 0; sleep 1; done; return 1; }
-rss_mb() { # sum RSS (MB) of master $1 + its worker children
-  local m=$1 kids; kids=$(pgrep -P "$m" 2>/dev/null || true)
-  ps -o rss= -p "$m" $kids 2>/dev/null | awk '{s+=$1} END{printf "%.0f", s/1024}'
+cleanup() {
+  kill_port
+  [ -n "$WT" ] && git worktree remove --force "$WT" >/dev/null 2>&1 || true
+  git worktree prune >/dev/null 2>&1 || true
+  [ -n "$WT_PARENT" ] && rm -rf "$WT_PARENT"
+  rm -f "$tmpout"
 }
+trap cleanup EXIT
+
+wait_up() { for _ in $(seq 1 90); do curl -s -o /dev/null -H "User-Agent: $UA" "http://127.0.0.1:$PORT/up" 2>/dev/null && return 0; sleep 1; done; return 1; }
+rss_mb() { local m=$1 kids; kids=$(pgrep -P "$m" 2>/dev/null || true); ps -o rss= -p "$m" $kids 2>/dev/null | awk '{s+=$1} END{printf "%.0f", s/1024}'; }
 nprocs() { local m=$1; echo $(( 1 + $(pgrep -P "$m" 2>/dev/null | wc -l | tr -d ' ') )); }
 
-boot() { # $1=extra env : returns master pid via $MASTER
+boot() { # $1=dir $2=extra env : sets $MASTER (puma master pid, cwd=$1)
   kill_port
   rm -f /tmp/mem_server.log
-  env $1 PORT="$PORT" nohup bundle exec puma -p "$PORT" -e production config.ru > /tmp/mem_server.log 2>&1 &
+  ( cd "$1" && exec env $2 PORT="$PORT" bundle exec puma -p "$PORT" -e production config.ru ) > /tmp/mem_server.log 2>&1 &
   MASTER=$!
   disown
-  wait_up || { echo "server failed to boot:"; tail -8 /tmp/mem_server.log; exit 1; }
+  wait_up || { echo "server failed to boot ($1):"; tail -8 /tmp/mem_server.log; exit 1; }
 }
 
-setup_data() { # reset DB + onboard once; cookie reused for all runs (shared secret+DB)
-  DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bundle exec rails db:reset >/dev/null 2>&1
-  boot "RACTOR_MODE=0"
-  PORT="$PORT" ruby script/get_cookie_setup.rb > "$COOKIE_FILE" 2>/dev/null
-  kill_port
-  [ -s "$COOKIE_FILE" ] || { echo "onboarding failed"; exit 1; }
+onboard() { # $1=cookie file ; server must be up
+  PORT="$PORT" ruby "$APP_DIR/script/get_cookie_setup.rb" > "$1" 2>/dev/null
+  [ -s "$1" ] || { echo "onboarding failed"; exit 1; }
 }
 
-measure() { # $1=master pid, $2=conc  ; echoes "rssMB rps status bad"
-  local m=$1 conc=$2 cookie; cookie=$(cat "$COOKIE_FILE")
-  PORT="$PORT" COOKIE="$cookie" DURATION=2 CONC="$conc" ruby script/mem_load.rb >/dev/null 2>&1 # warm
-  PORT="$PORT" COOKIE="$cookie" DURATION="$LOAD_SECS" CONC="$conc" ruby script/mem_load.rb > "$tmpout" 2>&1 &
+setup() {
+  echo "== preparing baseline worktree ($BASELINE_BRANCH) ==" >&2
+  local ref="$BASELINE_BRANCH"
+  git rev-parse --verify "$ref" >/dev/null 2>&1 || ref="origin/$BASELINE_BRANCH" # fresh clone: remote-tracking ref
+  git rev-parse --verify "$ref" >/dev/null 2>&1 || { echo "baseline branch not found (need '$BASELINE_BRANCH' locally or on origin)."; exit 1; }
+  WT_PARENT="$(mktemp -d)"; WT="$WT_PARENT/wb-baseline"
+  git worktree add -f "$WT" "$ref" >/dev/null 2>&1
+  ( cd "$WT" && bundle install \
+      && RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 DISABLE_SSL=1 bin/rails assets:precompile \
+      && DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bin/rails db:reset ) >/dev/null 2>&1 \
+    || { echo "baseline worktree prep failed"; exit 1; }
+  RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 DISABLE_SSL=1 bin/rails assets:precompile >/dev/null 2>&1 || true
+
+  echo "== onboarding baseline (cluster) ==" >&2
+  boot "$WT" "" ; onboard "$COOKIE_BASE" ; kill_port
+  echo "== onboarding experiment (pool) ==" >&2
+  ( DISABLE_DATABASE_ENVIRONMENT_CHECK=1 bin/rails db:reset ) >/dev/null 2>&1
+  boot "$APP_DIR" "RACTOR_MODE=0" ; onboard "$COOKIE_POOL" ; kill_port
+}
+
+measure() { # $1=master $2=conc $3=cookie-file ; echoes "rssMB rps status bad"
+  local m=$1 conc=$2 cookie; cookie=$(cat "$3")
+  PORT="$PORT" COOKIE="$cookie" DURATION=2 CONC="$conc" ruby "$APP_DIR/script/mem_load.rb" >/dev/null 2>&1 # warm
+  PORT="$PORT" COOKIE="$cookie" DURATION="$LOAD_SECS" CONC="$conc" ruby "$APP_DIR/script/mem_load.rb" > "$tmpout" 2>&1 &
   local lp=$! peak=0 cur
   while kill -0 "$lp" 2>/dev/null; do
     kill -0 "$m" 2>/dev/null && { cur=$(rss_mb "$m"); [ "${cur:-0}" -gt "$peak" ] && peak=$cur; }
     sleep 0.4
   done
   wait "$lp"
-  local rps bad status; rps=$(grep -o 'rps=[0-9.]*' "$tmpout" | cut -d= -f2)
-  bad=$(grep -o 'bad=[0-9]*' "$tmpout" | cut -d= -f2)
-  # A crash shows up as: the server BUG'd, the process is gone, or the load saw
-  # a flood of connection failures. Never report memory/throughput for a run
-  # whose server died -- that would silently hide a Ractor crash.
+  local rps bad status; rps=$(grep -o 'rps=[0-9.]*' "$tmpout" | cut -d= -f2); bad=$(grep -o 'bad=[0-9]*' "$tmpout" | cut -d= -f2)
+  # Never report memory/throughput for a run whose server died -- that would
+  # silently hide a crash.
   status=OK
   if [ "$(grep -c '\[BUG\]' /tmp/mem_server.log)" -gt 0 ] || ! curl -s -o /dev/null "http://127.0.0.1:$PORT/up" 2>/dev/null || [ "${bad:-0}" -gt 50 ]; then
     status=CRASH
@@ -67,18 +92,18 @@ measure() { # $1=master pid, $2=conc  ; echoes "rssMB rps status bad"
   echo "$peak ${rps:-0} $status ${bad:-0}"
 }
 
-printf "Memory to saturate N cores: Puma cluster vs Ractor pool  (load %ss, port %s)\n" "$LOAD_SECS" "$PORT"
+printf "Memory to saturate N cores: Puma cluster (%s, vanilla) vs Ractor pool (HEAD)  (load %ss)\n" "$BASELINE_BRANCH" "$LOAD_SECS"
 printf "ruby: %s\n\n" "$(ruby -e 'print RUBY_DESCRIPTION' 2>/dev/null)"
-setup_data
+setup
 printf "%-4s  %-14s %6s %8s %9s %8s   %s\n" "N" "config" "procs" "rss(MB)" "rps" "MB/rps" "mem gain"
 printf -- "------------------------------------------------------------------------------\n"
 first_p=""; first_r=""; last_p=""; last_r=""; first_n=""; last_n=""; crashed=0
 for N in $SWEEP; do
   conc=$(( N * 4 ))
-  boot "RACTOR_MODE=0 PUMA_WORKERS=$N RAILS_MAX_THREADS=1"
-  read -r prss prps pstat pbad <<<"$(measure "$MASTER" "$conc")"; pprocs=$(nprocs "$MASTER"); kill_port
-  boot "RACTOR_MODE=1 RACTOR_POOL=$N RAILS_MAX_THREADS=$N"
-  read -r rrss rrps rstat rbad <<<"$(measure "$MASTER" "$conc")"; kill_port
+  boot "$WT" "WEB_CONCURRENCY=$N RAILS_MAX_THREADS=1"
+  read -r prss prps pstat pbad <<<"$(measure "$MASTER" "$conc" "$COOKIE_BASE")"; pprocs=$(nprocs "$MASTER"); kill_port
+  boot "$APP_DIR" "RACTOR_MODE=1 RACTOR_POOL=$N RAILS_MAX_THREADS=$N"
+  read -r rrss rrps rstat rbad <<<"$(measure "$MASTER" "$conc" "$COOKIE_POOL")"; kill_port
   if [ "$pstat" = CRASH ]; then
     printf "%-4s  %-14s %6s   *** CRASHED under load (%s failed reqs / [BUG]) ***\n" "$N" "puma-cluster" "$pprocs" "$pbad"; crashed=1
   else
@@ -95,13 +120,13 @@ for N in $SWEEP; do
     last_n=$N; last_p=$prss; last_r=$rrss
   fi
 done
-rm -f "$tmpout"
 if [ "$first_n" != "$last_n" ]; then
   echo
   awk -v fp="$first_p" -v lp="$last_p" -v fr="$first_r" -v lr="$last_r" -v fn="$first_n" -v ln="$last_n" \
     'BEGIN{ d=ln-fn; printf "per added core (N=%s..%s):  puma-cluster +%.0f MB/core   ractor-pool +%.0f MB/core\n", fn, ln, (lp-fp)/d, (lr-fr)/d }'
 fi
 echo
+echo "cluster = $BASELINE_BRANCH (vanilla Writebook, N processes); pool = this build (N worker Ractors)."
 echo "rss    = peak resident memory under load (cluster = master + workers summed)."
 echo "MB/rps = memory per unit throughput (lower = more efficient)."
 echo "mem gain = puma-cluster rss / ractor-pool rss (higher = Ractors use less RAM)."
