@@ -26,7 +26,21 @@ show it works and has **no meaningful negative performance impact** so far.
 - With `RACTOR_METRICS=1`, each response carries `x-rz-*` timing headers used by
   the benchmark.
 
-## Running the benchmark
+## Ruby version
+
+Two benchmarks ship here, and they have **different Ruby requirements**:
+
+- **`script/benchmark.sh`** (boot + concurrency-1 latency) runs on **Ruby 4.0.1**.
+- **`script/memory_saturation.sh`** (memory vs. cores) requires **Ruby master**
+  (≥ 2026-07, reported as `4.1.0dev`). Under real concurrency, worker Ractors
+  calling `super` with keyword arguments trip a CRuby VM data race on the global
+  call-info table (`vm->ci_table`) and crash with `SIGBUS`. It is **fixed only in
+  Ruby master** — on 4.0.1 (and any released Ruby) the Ractor server crashes
+  under the benchmark's own load. The script detects this, prints
+  `*** CRASHED under load ***`, and exits non-zero rather than reporting bogus
+  numbers, so you cannot accidentally benchmark a crashing server.
+
+## Boot & latency benchmark (Ruby 4.0.1)
 
 ```sh
 git clone --branch ec-ractor-safe https://github.com/Shopify/writebook.git
@@ -66,3 +80,39 @@ All optional, via environment variables:
 | `POST_WARMUP` | `3` | warmup POSTs |
 | `PORT` | `3998` | port the benchmark server listens on |
 | `SKIP_BOOT` / `SKIP_LATENCY` | – | set to `1` to skip a phase |
+
+## Memory-saturation benchmark (Ruby master)
+
+This is the headline comparison: the memory needed to **saturate N cores** two
+ways — a Puma **cluster** (N worker processes, the traditional way to use N cores
+on CRuby) versus a single-process **Ractor pool** (N worker Ractors sharing one
+frozen heap) — while both serve the same concurrent authenticated `GET /` load.
+
+This benchmark **requires Ruby master** (see [Ruby version](#ruby-version)).
+Build/install it (e.g. with `ruby-build`, or from a source checkout), select it,
+and point `.ruby-version` at it so Bundler accepts it:
+
+```sh
+ruby -v                              # confirm you are on master, e.g. 4.1.0dev
+echo "4.1.0.dev" > .ruby-version      # match your build's reported version
+bundle install                       # redcarpet 3.6.1 (TypedData) builds on 4.1
+RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 DISABLE_SSL=1 bin/rails assets:precompile
+
+script/memory_saturation.sh 1 2 4 8   # the N values to sweep (default: 1 2 4 8)
+```
+
+For each N it prints process count, peak RSS under load, throughput (rps), memory
+per unit throughput (MB/rps), and the memory gain (cluster RSS / pool RSS). The
+headline is the **scaling**: Puma RSS grows ~linearly (each worker is a full app
+copy) while the Ractor pool stays flat (shared heap), so the gain compounds with
+core count.
+
+The pool's throughput is currently capped by the single main-dispatch thread
+(all DB funnels through one executor); a per-Ractor DB connection would let it
+scale like the cluster while keeping the flat memory curve.
+
+| var | default | meaning |
+|-----|---------|---------|
+| _(positional args)_ | `1 2 4 8` | the N values (cores / workers) to sweep |
+| `LOAD_SECS` | `10` | seconds of sustained load per measurement |
+| `PORT` | `3996` | port the benchmark server listens on |
