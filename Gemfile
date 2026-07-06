@@ -27,7 +27,7 @@ gem "stimulus-rails"
 # Other
 gem "benchmark" # No longer a default gem as of Ruby 4.0; required by mini_magick
 gem "jbuilder"
-gem "redcarpet", "~> 3.6"
+gem "redcarpet", "~> 3.6.1" # 3.6.1 ports to the TypedData C API (builds on Ruby 4.1+)
 gem "rouge", "~> 4.5"
 gem "bcrypt", "~> 3.1.7"
 gem "image_processing", "~> 1.13"
