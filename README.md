@@ -28,30 +28,25 @@ show it works and has **no meaningful negative performance impact** so far.
 
 ## Ruby version
 
-Two benchmarks ship here, and they have **different Ruby requirements**:
+**Both benchmarks require Ruby master** (≥ 2026-07, reported as `4.1.0dev`), which
+is the committed `.ruby-version`. Ruby master is needed because under real
+concurrency, worker Ractors calling `super` with keyword arguments trip a CRuby
+VM data race on the global call-info table (`vm->ci_table`) and crash with
+`SIGBUS` — **fixed only in Ruby master**. On any released Ruby the Ractor server
+crashes under load; `script/memory_saturation.sh` detects this, prints
+`*** CRASHED under load ***`, and exits non-zero rather than reporting bogus
+numbers.
 
-- **`script/benchmark.sh`** (boot + concurrency-1 latency) runs on **Ruby 4.0.1**.
-- **`script/memory_saturation.sh`** (memory vs. cores) requires **Ruby master**
-  (≥ 2026-07, reported as `4.1.0dev`). Under real concurrency, worker Ractors
-  calling `super` with keyword arguments trip a CRuby VM data race on the global
-  call-info table (`vm->ci_table`) and crash with `SIGBUS`. It is **fixed only in
-  Ruby master** — on 4.0.1 (and any released Ruby) the Ractor server crashes
-  under the benchmark's own load. The script detects this, prints
-  `*** CRASHED under load ***`, and exits non-zero rather than reporting bogus
-  numbers, so you cannot accidentally benchmark a crashing server.
+Build/install a Ruby master (e.g. with `ruby-build`, or from a source checkout)
+and select it before running either benchmark.
 
-The committed `.ruby-version` is **`4.1.0dev`** (Ruby master), so the memory
-benchmark works out of the box. To run `script/benchmark.sh` instead, switch to
-Ruby 4.0.1 first — the `chruby 4.0.1` + `bundle install` steps below re-resolve
-the lockfile for 4.0.1.
-
-## Boot & latency benchmark (Ruby 4.0.1)
+## Boot & latency benchmark
 
 ```sh
 git clone --branch ec-ractor-safe https://github.com/Shopify/writebook.git
 cd writebook
 
-chruby 4.0.1
+ruby -v          # confirm you are on Ruby master (4.1.0dev)
 bundle install
 RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 DISABLE_SSL=1 bin/rails assets:precompile
 
@@ -62,10 +57,9 @@ script/benchmark.sh
 
 `script/benchmark.sh` runs two phases and prints both:
 
-1. **BOOT** — boot time and memory for three configurations: the pre-Ractor
-   `main` baseline (in a throwaway git worktree), the experiment without
-   `ractorize!`, and the experiment with `ractorize!`. Shows the one-time cost
-   the Ractor machinery adds at boot.
+1. **BOOT** — boot time and memory **before vs after `ractorize!`** on the same
+   build (`boot_delta.rb` splits one boot into base boot + the one-time
+   `ractorize!` cost). Shows the one-time cost the Ractor machinery adds at boot.
 2. **LATENCY** — concurrency-1 latency (p50/p90/p99) of the same build served
    with Ractors vs without (`RACTOR_MODE=0`), across a gradient of endpoints:
    `/up` (no DB), `GET /first_run` (render), `POST /first_run` (the write path),
@@ -86,21 +80,16 @@ All optional, via environment variables:
 | `PORT` | `3998` | port the benchmark server listens on |
 | `SKIP_BOOT` / `SKIP_LATENCY` | – | set to `1` to skip a phase |
 
-## Memory-saturation benchmark (Ruby master)
+## Memory-saturation benchmark
 
 This is the headline comparison: the memory needed to **saturate N cores** two
 ways — a Puma **cluster** (N worker processes, the traditional way to use N cores
 on CRuby) versus a single-process **Ractor pool** (N worker Ractors sharing one
 frozen heap) — while both serve the same concurrent authenticated `GET /` load.
-
-This benchmark **requires Ruby master** (see [Ruby version](#ruby-version)). The
-committed `.ruby-version` already targets it (`4.1.0dev`); build/install a
-matching Ruby master (e.g. with `ruby-build`, or from a source checkout) and
-select it:
+Like the boot/latency benchmark it runs on Ruby master (see
+[Ruby version](#ruby-version)):
 
 ```sh
-ruby -v                              # confirm you are on Ruby master (4.1.0dev)
-bundle install                       # redcarpet 3.6.1 (TypedData) builds on 4.1
 RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 DISABLE_SSL=1 bin/rails assets:precompile
 
 script/memory_saturation.sh 1 2 4 8   # the N values to sweep (default: 1 2 4 8)

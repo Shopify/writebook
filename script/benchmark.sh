@@ -6,20 +6,17 @@
 #
 # Runs two phases and prints both reports:
 #
-#   1. BOOT      baseline (pre-Ractor "main" checkout) vs experiment base boot vs
-#                experiment + ractorize!  (auto-detects the baseline commit,
-#                creates a throwaway worktree, normalizes its cache store,
-#                bundles it, and boots each side BOOT_RUNS times).
+#   1. BOOT      boot time + RSS before vs after ractorize! (same build): boots
+#                BOOT_RUNS times and splits the one-time ractorize! cost.
 #   2. LATENCY   concurrency-1 latency of the SAME build served with Ractors vs
 #                without (RACTOR_MODE=0), across /up, GET/POST /first_run, and
 #                authenticated / -- with the worker/main/dispatch breakdown.
 #
 # Config via env (all optional):
 #   BOOT_RUNS=5  N=150  WARMUP=40  N_POST=15  POST_WARMUP=3  PORT=3998
-#   BASELINE_REF=<sha>      # override auto-detected pre-Ractor commit
 #   SKIP_BOOT=1 / SKIP_LATENCY=1
 #
-# Requires Ruby 4.x active (chruby 4.0.1) -- same as the experiment.
+# Requires Ruby master (4.1.0dev) active -- same as the experiment.
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -36,18 +33,15 @@ export ADMIN_PASSWORD="${ADMIN_PASSWORD:-secret123456}"
 
 rv="$(ruby -e 'print RUBY_VERSION')"
 case "$rv" in
-  4.*) ;;
-  *) echo "WARNING: Ruby $rv is active but the experiment needs Ruby 4.x (chruby 4.0.1)." >&2 ;;
+  4.1.*) ;;
+  *) echo "WARNING: Ruby $rv is active but the experiment targets Ruby master (4.1.0dev)." >&2 ;;
 esac
 
-# --- shared cleanup (worktree + server + temp files) ---
-WT="" ; WT_PARENT="" ; SERVER_PID="" ; TMPFILES=()
+# --- shared cleanup (server + temp files) ---
+SERVER_PID="" ; TMPFILES=()
 cleanup() {
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" >/dev/null 2>&1 || true
   pkill -f "puma.*$PORT" >/dev/null 2>&1 || true
-  [ -n "$WT" ] && git worktree remove --force "$WT" >/dev/null 2>&1 || true
-  git worktree prune >/dev/null 2>&1 || true
-  [ -n "$WT_PARENT" ] && rm -rf "$WT_PARENT"
   for f in "${TMPFILES[@]:-}"; do [ -n "$f" ] && rm -f "$f"; done
 }
 trap cleanup EXIT
@@ -57,89 +51,48 @@ trap cleanup EXIT
 # ===========================================================================
 phase_boot() {
   echo "########## PHASE 1: BOOT ##########" >&2
+  echo "Build: $(git log -1 --format='%h %s' HEAD)" >&2
 
-  local ref
-  ref="${BASELINE_REF:-}"
-  if [ -z "$ref" ]; then
-    local first_ractor
-    first_ractor="$(git log --reverse --format=%H -- config/initializers/ractor_patches.rb | head -1)"
-    [ -n "$first_ractor" ] || { echo "Could not auto-detect baseline; set BASELINE_REF=<sha>." >&2; return 1; }
-    ref="$(git rev-parse "${first_ractor}^")"
-  fi
-  echo "Baseline:   $(git log -1 --format='%h %s' "$ref")" >&2
-  echo "Experiment: $(git log -1 --format='%h %s' HEAD)" >&2
-
-  WT_PARENT="$(mktemp -d)"
-  WT="$WT_PARENT/wb-baseline"
-  echo "== Creating baseline worktree ==" >&2
-  git worktree add -f "$WT" "$ref" >/dev/null 2>&1
-  cp "$APP_DIR/script/boot_delta.rb" "$WT/script/boot_delta.rb"
-
-  # Normalize cache store so Redis isn't a confound.
-  local prod="$WT/config/environments/production.rb"
-  if grep -q 'config.cache_store' "$prod"; then
-    sed -i.bak 's/^\( *\)config\.cache_store = .*/\1config.cache_store = :null_store/' "$prod"
-    rm -f "$prod.bak"
-  fi
-
-  echo "== bundle install (baseline) -- may take a minute ==" >&2
-  if ! ( cd "$WT" && bundle install ) >/dev/null 2>&1; then
-    echo "baseline bundle install failed:" >&2
-    ( cd "$WT" && bundle install ) 2>&1 | tail -15
-    return 1
-  fi
-
-  local base_out exp_out
-  base_out="$(mktemp)"; exp_out="$(mktemp)"; TMPFILES+=("$base_out" "$exp_out")
-
-  local dir label out i
-  for pair in "$WT:baseline:$base_out" "$APP_DIR:experiment:$exp_out"; do
-    dir="${pair%%:*}"; rest="${pair#*:}"; label="${rest%%:*}"; out="${rest#*:}"
-    : > "$out"
-    echo "== Booting $label x$BOOT_RUNS ==" >&2
-    for i in $(seq 1 "$BOOT_RUNS"); do
-      if line="$(cd "$dir" && ruby script/boot_delta.rb 2>/dev/null | grep '^BOOTDELTA')"; then
-        echo "$line" >> "$out"
-      fi
-    done
+  local out i line; out="$(mktemp)"; TMPFILES+=("$out")
+  echo "== Booting x$BOOT_RUNS (before vs after ractorize!, same build) ==" >&2
+  for i in $(seq 1 "$BOOT_RUNS"); do
+    if line="$(ruby script/boot_delta.rb 2>/dev/null | grep '^BOOTDELTA')"; then
+      echo "$line" >> "$out"
+    fi
   done
   echo >&2
 
-  ruby - "$base_out" "$exp_out" <<'RUBY'
-base = File.readlines(ARGV[0]).map { |l| l.strip.split(",")[1..].map(&:to_f) }
-exp  = File.readlines(ARGV[1]).map { |l| l.strip.split(",")[1..].map(&:to_f) }
-abort "no successful boot runs" if base.empty? || exp.empty?
+  # boot_delta.rb splits a single boot into base_boot + the ractorize! cost, so
+  # "before" (no ractorize!) and "after" (+ ractorize!) come from the SAME build:
+  # cleaner and apples-to-apples (no separate baseline worktree needed).
+  ruby - "$out" <<'RUBY'
+rows = File.readlines(ARGV[0]).map { |l| l.strip.split(",")[1..].map(&:to_f) }
+abort "no successful boot runs" if rows.empty?
 def med(xs) = (s = xs.sort; s.size.odd? ? s[s.size/2] : (s[s.size/2-1]+s[s.size/2])/2.0)
 def col(rows, i) = rows.map { |r| r[i] }
 def b(s) = $stdout.tty? ? "\e[1m#{s}\e[0m" : s.to_s
 def c(s, code) = $stdout.tty? ? "\e[#{code}m#{s}\e[0m" : s.to_s
 WARMING = 33; SHAREABLE = 32; ONFREEZE = 36 # yellow / green / teal
-b_boot = med(col(base,0)); b_rss = med(col(base,6))
-e_full = med(exp.map { |r| r[0]+r[2] }); e_rss2 = med(col(exp,7))
-e_bf = med(col(exp,3)); e_gf = med(col(exp,4)); e_on = med(col(exp,5))
-delta = e_full - b_boot
-n = [base.size, exp.size].min
-printf("Boot time: before vs after the experiment (median of %d boots/side, production)\n\n", n)
+before_boot = med(col(rows,0))                    # base_boot, no ractorize!
+after_boot  = med(rows.map { |r| r[0]+r[2] })     # + ractorize!
+before_rss  = med(col(rows,6)); after_rss = med(col(rows,7))
+e_bf = med(col(rows,3)); e_gf = med(col(rows,4)); e_on = med(col(rows,5))
+delta = after_boot - before_boot
+printf("Boot time: before vs after ractorize! (median of %d boots, same build, production)\n\n", rows.size)
 printf("%-30s %10s %10s\n", "", "boot ms", "RSS MB")
 printf("%-30s %10s %10s\n", "-"*30, "-"*10, "-"*10)
-printf("%-30s %10.1f %10.1f\n", "before (main, no Ractor)", b_boot, b_rss)
-printf("%-30s %10.1f %10.1f\n", "after  (+ ractorize!)", e_full, e_rss2)
+printf("%-30s %10.1f %10.1f\n", "before (no ractorize!)", before_boot, before_rss)
+printf("%-30s %10.1f %10.1f\n", "after  (+ ractorize!)", after_boot, after_rss)
 puts
 printf("Cost of the experiment: %s, RSS %+.1f MB\n",
-       b(sprintf("%+.1f ms (%+.1f%%)", delta, delta / b_boot * 100)), e_rss2 - b_rss)
-printf("  ~all one-time ractorize!:  %s %.1f  /  %s %.1f  /  %s %.1f ms\n",
+       b(sprintf("%+.1f ms (%+.1f%%)", delta, delta / before_boot * 100)), after_rss - before_rss)
+printf("  all one-time ractorize!:  %s %.1f  /  %s %.1f  /  %s %.1f ms\n",
        c("warming", WARMING), e_bf, c("make_shareable", SHAREABLE), e_gf, c("on_freeze", ONFREEZE), e_on)
 puts
 puts "  #{c("warming", WARMING)}#{" " * 7} force lazily-memoized state (reflections, schema, url helpers) up-front so it can be frozen"
 puts "  #{c("make_shareable", SHAREABLE)} deep-freeze the whole application object graph so Ractors can share it"
 puts "  #{c("on_freeze", ONFREEZE)}#{" " * 5} freeze gem/framework state outside the graph + recompile callback chains as shareable procs"
 RUBY
-
-  # Free the worktree before phase 2.
-  git worktree remove --force "$WT" >/dev/null 2>&1 || true
-  git worktree prune >/dev/null 2>&1 || true
-  rm -rf "$WT_PARENT"
-  WT=""; WT_PARENT=""
 }
 
 # ===========================================================================
@@ -173,7 +126,7 @@ phase_latency() {
     if ! wait_ready; then echo "[$label] server did not become ready:" >&2; tail -15 /tmp/bench_server.log >&2; return 1; fi
     echo "== [$label] probing (N=$N warmup=$WARMUP N_POST=$N_POST) ==" >&2
     MODE="$label" PORT="$PORT" N="$N" WARMUP="$WARMUP" N_POST="$N_POST" POST_WARMUP="$POST_WARMUP" \
-      ruby script/latency_probe.rb >> "$out"
+      ruby script/latency_probe.rb 2>/dev/null >> "$out"
     kill "$SERVER_PID" >/dev/null 2>&1 || true
     pkill -f "puma.*$PORT" >/dev/null 2>&1 || true
     SERVER_PID=""
