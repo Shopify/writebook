@@ -100,8 +100,9 @@ script/memory_saturation.sh 1 2 4 8   # the N values to sweep (default: 1 2 4 8)
 ```
 
 It prints one table per endpoint; for each N: process count, peak RSS under load,
-throughput (rps), memory per unit throughput (MB/rps), and the memory gain
-(cluster RSS / pool RSS). The headline is the **scaling**: Puma RSS grows
+throughput (rps), client latency under load (p50/p99 ms), memory per unit
+throughput (MB/rps), and the memory gain (cluster RSS / pool RSS). The headline
+is the **scaling**: Puma RSS grows
 ~linearly (each worker is a full app copy) while the Ractor pool stays flat
 (shared heap), so the gain compounds with core count — on both endpoints.
 

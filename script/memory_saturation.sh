@@ -84,14 +84,18 @@ measure() { # $1=master $2=conc $3=cookie-file $4=endpoint ; echoes "rssMB rps s
     sleep 0.4
   done
   wait "$lp"
-  local rps bad status; rps=$(grep -o 'rps=[0-9.]*' "$tmpout" | cut -d= -f2); bad=$(grep -o 'bad=[0-9]*' "$tmpout" | cut -d= -f2)
+  local rps bad p50 p99 status
+  rps=$(grep -o 'rps=[0-9.]*' "$tmpout" | cut -d= -f2)
+  bad=$(grep -o 'bad=[0-9]*' "$tmpout" | cut -d= -f2)
+  p50=$(grep -o 'p50=[0-9.]*' "$tmpout" | cut -d= -f2)
+  p99=$(grep -o 'p99=[0-9.]*' "$tmpout" | cut -d= -f2)
   # Never report memory/throughput for a run whose server died -- that would
   # silently hide a crash.
   status=OK
   if [ "$(grep -c '\[BUG\]' /tmp/mem_server.log)" -gt 0 ] || [ "${bad:-0}" -gt 50 ] || ! alive; then
     status=CRASH
   fi
-  echo "$peak ${rps:-0} $status ${bad:-0}"
+  echo "$peak ${rps:-0} $status ${bad:-0} ${p50:-0} ${p99:-0}"
 }
 
 printf "Memory to saturate N cores: Puma cluster (%s, vanilla) vs Ractor pool (HEAD)  (load %ss)\n" "$BASELINE_BRANCH" "$LOAD_SECS"
@@ -103,22 +107,22 @@ for N in $SWEEP; do
   echo "== N=$N: cluster ($BASELINE_BRANCH, WEB_CONCURRENCY=$N) ==" >&2
   boot "$WT" "WEB_CONCURRENCY=$N RAILS_MAX_THREADS=1"; pprocs=$(nprocs "$MASTER")
   for ep in $ENDPOINTS; do
-    read -r rss rps stat bad <<<"$(measure "$MASTER" "$conc" "$COOKIE_BASE" "$ep")"
-    echo "$ep $N puma-cluster $pprocs $rss $rps $stat $bad" >> "$rows"
+    read -r rss rps stat bad p50 p99 <<<"$(measure "$MASTER" "$conc" "$COOKIE_BASE" "$ep")"
+    echo "$ep $N puma-cluster $pprocs $rss $rps $stat $bad $p50 $p99" >> "$rows"
   done
   kill_port
   echo "== N=$N: ractor-pool (RACTOR_POOL=$N) ==" >&2
   boot "$APP_DIR" "RACTOR_MODE=1 RACTOR_POOL=$N RAILS_MAX_THREADS=$N"
   for ep in $ENDPOINTS; do
-    read -r rss rps stat bad <<<"$(measure "$MASTER" "$conc" "$COOKIE_POOL" "$ep")"
-    echo "$ep $N ractor-pool 1 $rss $rps $stat $bad" >> "$rows"
+    read -r rss rps stat bad p50 p99 <<<"$(measure "$MASTER" "$conc" "$COOKIE_POOL" "$ep")"
+    echo "$ep $N ractor-pool 1 $rss $rps $stat $bad $p50 $p99" >> "$rows"
   done
   kill_port
 done
 echo >&2
 
 ruby - "$rows" "$BASELINE_BRANCH" <<'RUBY'
-rows = File.readlines(ARGV[0]).map(&:split)  # ep N config procs rss rps stat bad
+rows = File.readlines(ARGV[0]).map(&:split)  # ep N config procs rss rps stat bad p50 p99
 base = ARGV[1]
 def c(s, code) = $stdout.tty? ? "\e[#{code}m#{s}\e[0m" : s.to_s
 descr = { "/up" => "healthcheck, no DB", "/" => "authenticated: DB + render" }
@@ -128,24 +132,24 @@ failed = false
   next if ers.empty?
   puts
   puts "endpoint #{ep}  (#{descr[ep] || ""})"
-  printf("%-4s  %-14s %6s %8s %9s %8s   %s\n", "N", "config", "procs", "rss(MB)", "rps", "MB/rps", "mem gain")
-  puts "-" * 78
+  printf("%-4s  %-14s %5s %8s %8s %7s %7s %7s   %s\n", "N", "config", "procs", "rss(MB)", "rps", "p50", "p99", "MB/rps", "mem gain")
+  puts "-" * 86
   fp=nil; lp=nil; fr=nil; lr=nil; fn=nil; ln=nil
   ers.map { |r| r[1].to_i }.uniq.sort.each do |n|
     pc = ers.find { |r| r[1].to_i == n && r[2] == "puma-cluster" }
     rp = ers.find { |r| r[1].to_i == n && r[2] == "ractor-pool" }
     if pc && pc[6] == "CRASH"
-      printf("%-4s  %-14s %6s   #{c("*** CRASHED under load (%s failed reqs) ***", 31)}\n", n, "puma-cluster", pc[3], pc[7]); failed = true
+      printf("%-4s  %-14s %5s   #{c("*** CRASHED under load (%s failed reqs) ***", 31)}\n", n, "puma-cluster", pc[3], pc[7]); failed = true
     elsif pc
       peff = pc[5].to_f > 0 ? format("%.2f", pc[4].to_f / pc[5].to_f) : "-"
-      printf("%-4s  %-14s %6s %8s %9s %8s\n", n, "puma-cluster", pc[3], pc[4], pc[5], peff)
+      printf("%-4s  %-14s %5s %8s %8s %7s %7s %7s\n", n, "puma-cluster", pc[3], pc[4], pc[5], pc[8], pc[9], peff)
     end
     if rp && rp[6] == "CRASH"
-      printf("%-4s  %-14s %6s   #{c("*** CRASHED under load (%s failed reqs) ***", 31)}\n", "", "ractor-pool", "1", rp[7]); failed = true
+      printf("%-4s  %-14s %5s   #{c("*** CRASHED under load (%s failed reqs) ***", 31)}\n", "", "ractor-pool", "1", rp[7]); failed = true
     elsif rp
       reff = rp[5].to_f > 0 ? format("%.2f", rp[4].to_f / rp[5].to_f) : "-"
       gain = (pc && pc[6] != "CRASH" && rp[4].to_f > 0) ? format("%.2fx", pc[4].to_f / rp[4].to_f) : "-"
-      printf("%-4s  %-14s %6s %8s %9s %8s   %s\n", "", "ractor-pool", "1", rp[4], rp[5], reff, gain)
+      printf("%-4s  %-14s %5s %8s %8s %7s %7s %7s   %s\n", "", "ractor-pool", "1", rp[4], rp[5], rp[8], rp[9], reff, gain)
       if pc && pc[6] != "CRASH"
         if fn.nil? then fn = n; fp = pc[4].to_f; fr = rp[4].to_f end
         ln = n; lp = pc[4].to_f; lr = rp[4].to_f
@@ -160,7 +164,7 @@ end
 puts
 puts "cluster = #{base} (vanilla Writebook, N processes); pool = this build (N worker Ractors)."
 puts "rss = peak RSS under load (cluster = master + workers summed); MB/rps = memory per rps."
-puts "mem gain = puma-cluster rss / ractor-pool rss (higher = Ractors use less RAM)."
+puts "p50/p99 = client latency (ms) under the concurrent load; mem gain = cluster rss / pool rss."
 puts "NOTE: on / (DB-bound) the pool's throughput is capped by the single main-dispatch"
 puts "thread; on /up (no DB) it runs fully parallel. Memory stays flat either way."
 exit 1 if failed
