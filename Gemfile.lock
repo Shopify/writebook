@@ -337,6 +337,8 @@ GEM
       rack-protection (= 4.2.1)
       rack-session (>= 2.0.0, < 3)
       tilt (~> 2.0)
+    sqlite3 (2.9.2)
+      mini_portile2 (~> 2.8.0)
     sqlite3 (2.9.2-aarch64-linux-gnu)
     sqlite3 (2.9.2-arm-linux-gnu)
     sqlite3 (2.9.2-arm64-darwin)
@@ -414,7 +416,7 @@ DEPENDENCIES
   web-console
 
 RUBY VERSION
-   ruby 4.0.1p0
+  ruby 4.1.0.dev
 
 BUNDLED WITH
-   2.5.18
+  4.1.0.dev

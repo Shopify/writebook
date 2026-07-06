@@ -40,6 +40,11 @@ Two benchmarks ship here, and they have **different Ruby requirements**:
   `*** CRASHED under load ***`, and exits non-zero rather than reporting bogus
   numbers, so you cannot accidentally benchmark a crashing server.
 
+The committed `.ruby-version` is **`4.1.0dev`** (Ruby master), so the memory
+benchmark works out of the box. To run `script/benchmark.sh` instead, switch to
+Ruby 4.0.1 first — the `chruby 4.0.1` + `bundle install` steps below re-resolve
+the lockfile for 4.0.1.
+
 ## Boot & latency benchmark (Ruby 4.0.1)
 
 ```sh
@@ -88,13 +93,13 @@ ways — a Puma **cluster** (N worker processes, the traditional way to use N co
 on CRuby) versus a single-process **Ractor pool** (N worker Ractors sharing one
 frozen heap) — while both serve the same concurrent authenticated `GET /` load.
 
-This benchmark **requires Ruby master** (see [Ruby version](#ruby-version)).
-Build/install it (e.g. with `ruby-build`, or from a source checkout), select it,
-and point `.ruby-version` at it so Bundler accepts it:
+This benchmark **requires Ruby master** (see [Ruby version](#ruby-version)). The
+committed `.ruby-version` already targets it (`4.1.0dev`); build/install a
+matching Ruby master (e.g. with `ruby-build`, or from a source checkout) and
+select it:
 
 ```sh
-ruby -v                              # confirm you are on master, e.g. 4.1.0dev
-echo "4.1.0.dev" > .ruby-version      # match your build's reported version
+ruby -v                              # confirm you are on Ruby master (4.1.0dev)
 bundle install                       # redcarpet 3.6.1 (TypedData) builds on 4.1
 RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 DISABLE_SSL=1 bin/rails assets:precompile
 
