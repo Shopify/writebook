@@ -50,6 +50,12 @@ module RactorPatches
   # the Ractor. The Ractor then invokes the frozen, shareable Rails.application
   # through the full middleware stack and returns [status, headers, body].
   class Bridge
+    # Pool size: number of persistent worker Ractors. RACTOR_POOL=0 falls back to
+    # spawning one ephemeral Ractor per request (the original behavior).
+    POOL_SIZE = Integer(ENV.fetch("RACTOR_POOL", "4"))
+
+    @pool_mutex = Mutex.new
+
     def call(env)
       body = (input = env["rack.input"]) ? input.read : ""
 
@@ -62,39 +68,103 @@ module RactorPatches
       metrics = RactorPatches.metrics?
       wall_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-      result = Ractor.new(safe_env, body, metrics) do |ractor_env, ractor_body, metrics|
-        ractor_env = ractor_env.dup
-        ractor_env["rack.input"]  = StringIO.new(ractor_body)
-        ractor_env["rack.errors"] = StringIO.new(+"")
-        ractor_env["rack.url_scheme"] ||= "http"
-
-        # Give this Ractor its own (empty) connection handler. DB access is
-        # dispatched to the main Ractor, so this Ractor owns no pools; the empty
-        # handler lets per-request executor hooks (query cache, etc.) run as
-        # no-ops instead of reaching the main Ractor's unshareable handler.
-        ActiveRecord::Base.connection_handler = ActiveRecord::ConnectionAdapters::ConnectionHandler.new
-
-        app_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-        st, hdrs, rack_body = Rails.application.call(ractor_env)
-        buffer = +""
-        rack_body.each { |chunk| buffer << chunk }
-        rack_body.close if rack_body.respond_to?(:close)
-        h = hdrs.to_h
-        if metrics
-          app_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - app_start) * 1000
-          h["x-rz-app"]        = app_ms.round(3).to_s
-          h["x-rz-main-db"]    = ((Thread.current[:rz_db_ns]  || 0) / 1_000_000.0).round(3).to_s
-          h["x-rz-main-other"] = ((Thread.current[:rz_oth_ns] || 0) / 1_000_000.0).round(3).to_s
-          h["x-rz-dispatches"] = (Thread.current[:rz_main_count] || 0).to_s
+      st, h, buffer =
+        if POOL_SIZE.positive?
+          Bridge.pool.call(safe_env, body, metrics)
+        else
+          Ractor.new(safe_env, body, metrics) do |e, b, m|
+            ActiveRecord::Base.connection_handler = ActiveRecord::ConnectionAdapters::ConnectionHandler.new
+            RactorPatches::Bridge.handle(e, b, m)
+          end.value
         end
-        [st, h, buffer]
-      end.value
 
-      headers = result[1]
+      h["x-rz-wall"] = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - wall_start) * 1000).round(3).to_s if metrics
+      [st, h, [buffer]]
+    end
+
+    # Lazily build the pool on first request (guaranteed after ractorize! froze
+    # the application graph).
+    def self.pool
+      @pool || @pool_mutex.synchronize { @pool ||= WorkerPool.new(POOL_SIZE) }
+    end
+
+    # Runs one request. Called inside a worker Ractor. Rebuilds rack.input/errors
+    # (the real socket IO can't cross Ractors), invokes the frozen shareable
+    # Rails.application, and returns a copyable [status, headers, body].
+    #
+    # Rescues *everything* so a per-request failure -- notably the cross-Ractor
+    # compiled-template Proc race that appears under concurrency -- surfaces as a
+    # logged 500 instead of silently killing the worker Ractor, letting us both
+    # keep serving and capture the backtrace.
+    def self.handle(ractor_env, ractor_body, metrics)
+      ractor_env = ractor_env.dup
+      ractor_env["rack.input"]  = StringIO.new(ractor_body)
+      ractor_env["rack.errors"] = StringIO.new(+"")
+      ractor_env["rack.url_scheme"] ||= "http"
+
       if metrics
-        headers["x-rz-wall"] = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - wall_start) * 1000).round(3).to_s
+        Thread.current[:rz_db_ns] = Thread.current[:rz_oth_ns] = Thread.current[:rz_main_count] = 0
       end
-      [result[0], headers, [result[2]]]
+
+      app_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      st, hdrs, rack_body = Rails.application.call(ractor_env)
+      buffer = +""
+      rack_body.each { |chunk| buffer << chunk }
+      rack_body.close if rack_body.respond_to?(:close)
+      h = hdrs.to_h
+      if metrics
+        app_ms = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - app_start) * 1000
+        h["x-rz-app"]        = app_ms.round(3).to_s
+        h["x-rz-main-db"]    = ((Thread.current[:rz_db_ns]  || 0) / 1_000_000.0).round(3).to_s
+        h["x-rz-main-other"] = ((Thread.current[:rz_oth_ns] || 0) / 1_000_000.0).round(3).to_s
+        h["x-rz-dispatches"] = (Thread.current[:rz_main_count] || 0).to_s
+      end
+      [st, h, buffer]
+    rescue Exception => e # rubocop:disable Lint/RescueException
+      warn "[ractor-pool] #{e.class}: #{e.message}"
+      warn(e.backtrace.first(40).join("\n")) if e.backtrace
+      [500, { "content-type" => "text/plain; charset=utf-8" }, +"ractor worker error: #{e.class}: #{e.message}"]
+    end
+  end
+
+  # A fixed pool of persistent worker Ractors. Each worker owns its own (empty)
+  # connection handler and an inbox Port. The pool hands each request to an idle
+  # worker and reads the reply from a per-request Port; up to POOL_SIZE requests
+  # run in separate Ractors -- and thus on separate cores -- simultaneously.
+  class WorkerPool
+    def initialize(size)
+      @idle = Queue.new
+      @workers = Array.new(size) { spawn_worker }
+    end
+
+    def size = @workers.size
+
+    def call(safe_env, body, metrics)
+      inbox = @idle.pop # blocks until a worker is free (backpressure)
+      reply = Ractor::Port.new
+      inbox << [safe_env, body, metrics, reply]
+      reply.receive
+    ensure
+      @idle << inbox if inbox
+    end
+
+    private
+
+    def spawn_worker
+      setup = Ractor::Port.new
+      ractor = Ractor.new(setup) do |setup|
+        inbox = Ractor::Port.new
+        setup << inbox
+        # DB access is dispatched to main, so this worker owns no pools; the
+        # empty handler lets per-request executor hooks run as no-ops.
+        ActiveRecord::Base.connection_handler = ActiveRecord::ConnectionAdapters::ConnectionHandler.new
+        loop do
+          safe_env, body, metrics, reply = inbox.receive
+          reply << RactorPatches::Bridge.handle(safe_env, body, metrics)
+        end
+      end
+      @idle << setup.receive # the worker's inbox port
+      ractor
     end
   end
 end
