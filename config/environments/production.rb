@@ -41,7 +41,7 @@ Rails.application.configure do
   config.log_level = ENV.fetch("RAILS_LOG_LEVEL", "info")
 
   # Cache in memory for now
-  config.cache_store = :redis_cache_store
+  config.cache_store = :null_store # benchmark baseline: avoid the Redis dependency (matches the experiment)
 
   # Assets are cacheable
   config.public_file_server.headers = {
@@ -62,5 +62,5 @@ Rails.application.configure do
   # Do not dump schema after migrations.
   config.active_record.dump_schema_after_migration = false
 
-  config.active_job.queue_adapter = :resque
+  config.active_job.queue_adapter = ENV.fetch("QUEUE_ADAPTER", "async").to_sym # baseline: avoid Redis/Resque
 end

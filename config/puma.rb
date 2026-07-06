@@ -6,7 +6,10 @@ environment rails_env
 
 case rails_env
 when "production"
-  workers_count = Integer(ENV.fetch("WEB_CONCURRENCY") { (Concurrent.processor_count * 0.666).ceil })
+  # Default to single mode; set WEB_CONCURRENCY=N for a clustered baseline.
+  # (Vanilla Writebook auto-sized workers via Concurrent.processor_count, but
+  # that constant isn't loaded in Puma's DSL context on Ruby master.)
+  workers_count = Integer(ENV.fetch("WEB_CONCURRENCY", "0"))
   workers workers_count if workers_count > 1
 
   preload_app!
