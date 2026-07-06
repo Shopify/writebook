@@ -87,9 +87,11 @@ This is the headline comparison: the memory needed to **saturate N cores** two
 ways — a Puma **cluster** running the **`ec-baseline` branch** (vanilla Writebook,
 N worker processes — the traditional way to use N cores on CRuby) versus a
 single-process **Ractor pool** (this build, N worker Ractors sharing one frozen
-heap) — while both serve the same concurrent authenticated `GET /` load. The
-script manages the baseline worktree itself. Like the boot/latency benchmark it
-runs on Ruby master (see [Ruby version](#ruby-version)):
+heap) — while both serve the same concurrent load. It measures each config for
+**two endpoints**: `/up` (healthcheck, no DB — shows pure parallel throughput) and
+the authenticated `/` (DB + render — the real read path). The script manages the
+baseline worktree itself. Like the boot/latency benchmark it runs on Ruby master
+(see [Ruby version](#ruby-version)):
 
 ```sh
 RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 DISABLE_SSL=1 bin/rails assets:precompile
@@ -97,15 +99,17 @@ RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 DISABLE_SSL=1 bin/rails assets:prec
 script/memory_saturation.sh 1 2 4 8   # the N values to sweep (default: 1 2 4 8)
 ```
 
-For each N it prints process count, peak RSS under load, throughput (rps), memory
-per unit throughput (MB/rps), and the memory gain (cluster RSS / pool RSS). The
-headline is the **scaling**: Puma RSS grows ~linearly (each worker is a full app
-copy) while the Ractor pool stays flat (shared heap), so the gain compounds with
-core count.
+It prints one table per endpoint; for each N: process count, peak RSS under load,
+throughput (rps), memory per unit throughput (MB/rps), and the memory gain
+(cluster RSS / pool RSS). The headline is the **scaling**: Puma RSS grows
+~linearly (each worker is a full app copy) while the Ractor pool stays flat
+(shared heap), so the gain compounds with core count — on both endpoints.
 
-The pool's throughput is currently capped by the single main-dispatch thread
-(all DB funnels through one executor); a per-Ractor DB connection would let it
-scale like the cluster while keeping the flat memory curve.
+On `/` (DB-bound) the pool's throughput is capped by the single main-dispatch
+thread (all DB funnels through one executor); on `/up` (no DB) it runs fully
+parallel. A per-Ractor DB connection would let `/` scale like the cluster too,
+while keeping the flat memory curve. (Runs that crash under load are flagged and
+fail the benchmark rather than reporting bogus numbers.)
 
 | var | default | meaning |
 |-----|---------|---------|

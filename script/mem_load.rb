@@ -6,6 +6,7 @@ require "thread"
 HOST     = ENV.fetch("HOST", "127.0.0.1")
 PORT     = Integer(ENV.fetch("PORT", "3996"))
 COOKIE   = ENV.fetch("COOKIE", "")
+ENDPOINT = ENV.fetch("ENDPOINT", "/") # NB: not PATH (that's the shell's PATH)
 DURATION = Float(ENV.fetch("DURATION", "8"))
 CONC     = Integer(ENV.fetch("CONC", "8"))
 UA       = "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149 Safari/537.36"
@@ -18,7 +19,7 @@ threads = CONC.times.map do |i|
   Thread.new do
     conn = Net::HTTP.new(HOST, PORT); conn.read_timeout = 60
     conn.start
-    req = Net::HTTP::Get.new("/"); req["User-Agent"] = UA; req["Cookie"] = COOKIE
+    req = Net::HTTP::Get.new(ENDPOINT); req["User-Agent"] = UA; req["Cookie"] = COOKIE
     while Process.clock_gettime(Process::CLOCK_MONOTONIC) < deadline
       begin
         r = conn.request(req)
