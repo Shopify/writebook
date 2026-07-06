@@ -1,7 +1,12 @@
 GIT
-  remote: https://github.com/Shopify/rails.git
-  revision: 0bdc1bb116e9a73eebffde673d5e17d9342f1b1e
-  ref: 0bdc1bb116e9a73eebffde673d5e17d9342f1b1e
+  remote: https://github.com/basecamp/useragent.git
+  revision: 433ca320a42db1266c4b89df74d0abdb9a880c5e
+  specs:
+    useragent (0.16.11)
+
+GIT
+  remote: https://github.com/rails/rails.git
+  revision: c4950c5240ae5ba2f306049ca5438f96070933c1
   specs:
     actioncable (8.2.0.alpha)
       actionpack (= 8.2.0.alpha)
@@ -99,12 +104,6 @@ GIT
       thor (~> 1.0, >= 1.2.2)
       tsort (>= 0.2)
       zeitwerk (~> 2.6)
-
-GIT
-  remote: https://github.com/basecamp/useragent.git
-  revision: 433ca320a42db1266c4b89df74d0abdb9a880c5e
-  specs:
-    useragent (0.16.11)
 
 GEM
   remote: https://rubygems.org/

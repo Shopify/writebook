@@ -2,12 +2,7 @@ source "https://rubygems.org"
 
 ruby file: ".ruby-version"
 
-# Baseline pins the same Rails revision the Ractor experiment uses (Shopify/rails
-# writebook-ractorize @ 0bdc1bb, Rails 8.2.0.alpha) so the boot comparison is
-# apples-to-apples: identical framework, this branch just lacks the app's Ractor
-# machinery. (Upstream rails/rails HEAD breaks `config.load_defaults 7.2` on Ruby
-# master.) The fork's Ractor patches are dormant here — nothing calls ractorize!.
-gem "rails", github: "Shopify/rails", ref: "0bdc1bb116e9a73eebffde673d5e17d9342f1b1e"
+gem "rails", github: "rails/rails"
 
 # Drivers
 gem "sqlite3", "~> 2.9"
