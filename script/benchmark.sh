@@ -159,6 +159,13 @@ phase_latency() {
     sleep 1
   }
 
+  # Ractor mode renders 500s without a Propshaft manifest (the digest cache can't
+  # be populated inside a frozen worker Ractor), so ensure assets are precompiled.
+  if [ ! -f public/assets/.manifest.json ]; then
+    echo "== precompiling assets (required for Ractor mode) ==" >&2
+    bin/rails assets:precompile >/dev/null 2>&1 || { echo "assets:precompile failed" >&2; return 1; }
+  fi
+
   run_mode base   RACTOR_MODE=0
   run_mode ractor RACTOR_METRICS=1
   echo >&2
@@ -172,10 +179,11 @@ def bold(s) = $stdout.tty? ? "\e[1m#{s}\e[0m" : s.to_s
 def c(s, code) = $stdout.tty? ? "\e[#{code}m#{s}\e[0m" : s.to_s
 puts "Concurrency-1 latency: base (no Ractor) vs ractor  [client-side ms]"
 puts
-printf("%-16s %-7s %8s %8s %s %s %8s\n",
+printf("%-16s %-7s %8s %8s %s %s %8s %9s\n",
        "endpoint", "mode", "p50", "p99",
-       c(sprintf("%8s", "db"), 32), c(sprintf("%8s", "other"), 36), "worker")
-printf("%s\n", "-"*70)
+       c(sprintf("%8s", "db"), 32), c(sprintf("%8s", "other"), 36), "worker", "ok")
+printf("%s\n", "-"*80)
+failed = false
 order.each do |ep|
   next unless by.key?(ep)
   %w[base ractor].each do |m|
@@ -183,7 +191,10 @@ order.each do |ep|
     db  = m == "ractor" ? r[10] : "-"
     oth = m == "ractor" ? r[11] : "-"
     wrk = m == "ractor" ? r[12] : "-"
-    printf("%-16s %-7s %s %8s %8s %8s %8s\n", ep, m, bold(sprintf("%8s", r[4])), r[6], db, oth, wrk)
+    okn, tot = r[3].split("/").map(&:to_i)
+    failed = true if okn < tot
+    okf = okn < tot ? c(sprintf("%9s", r[3]), 31) : sprintf("%9s", r[3]) # red when some requests failed
+    printf("%-16s %-7s %s %8s %8s %8s %8s %s\n", ep, m, bold(sprintf("%8s", r[4])), r[6], db, oth, wrk, okf)
   end
   b = by[ep]["base"]; x = by[ep]["ractor"]
   if b && x && b[4].to_f > 0
@@ -196,6 +207,14 @@ end
 puts "  #{c("db", 32)}#{" " * 4} ms on the main Ractor: DB / connection calls"
 puts "  #{c("other", 36)}#{" " * 1} ms on the main Ractor: Markdown rendering (Redcarpet C ext), HTML sanitize (Loofah unsafe), image analysis (vips unsafe)"
 puts "  worker ms running the app in the worker Ractor"
+puts "  ok     successful responses / total (2xx for GETs, 3xx for POST /first_run)"
+if failed
+  puts
+  puts "!!! Some requests FAILED (ok < total above) -- these latency numbers are NOT"
+  puts "!!! valid. Most often Ractor mode returns 500s without precompiled assets:"
+  puts "!!!   RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 DISABLE_SSL=1 bin/rails assets:precompile"
+  exit 1
+end
 RUBY
 }
 
