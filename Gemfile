@@ -51,3 +51,8 @@ group :test do
   gem "capybara"
   gem "selenium-webdriver"
 end
+
+# Ractor-native web server (Rust front-end + worker Ractors), used by the
+# memory-saturation benchmark via config_kino.ru. The fork pins magnus git main
+# for the Ruby 4.1 rb_data_type_t ABI change (not in a released magnus yet).
+gem "kino", github: "Edouard-chin/kino", branch: "ruby-master-abi"
