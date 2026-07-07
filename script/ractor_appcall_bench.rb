@@ -23,7 +23,8 @@
 #   N        worker Ractors (default 1)
 #   DUR      seconds to run (default 3)
 #   NOGC=1   GC.disable (rules GC in/out)
-#   NOLOG=1  raise the logger level so requests don't log (rules the logger out)
+#   LOG=1    show per-request logs (silenced by default; the logger was
+#            measured NOT to be the bottleneck)
 #   NO_YJIT=1  disable YJIT (via the config.yjit guard in production.rb)
 #   PROFILE=1  profile the whole process with macOS `sample` during the run
 #              (writes tmp/ractor_appcall_sample.txt, override with SAMPLE_OUT)
@@ -54,11 +55,10 @@ require "stringio"
 
 Rails.application.load_server
 
-if ENV["NOLOG"] == "1"
-  require "logger"
-  Rails.logger.level = Logger::ERROR
-  warn "[nolog] logger level=#{Rails.logger.level}"
-end
+# Silence per-request logging by default -- it floods stdout and was measured
+# NOT to be the bottleneck. Set LOG=1 to see the request logs.
+require "logger"
+Rails.logger.level = Logger::FATAL unless ENV["LOG"] == "1"
 warn "[yjit] enabled=#{(RubyVM::YJIT.enabled? rescue :na)}"
 
 Rails.application.ractorize! unless Rails.application.frozen?
