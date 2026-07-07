@@ -15,9 +15,9 @@
 # almost no code for YJIT to compile, proving the cost is YJIT's code
 # management under Ractors, not the act of sharing a frozen callable.
 #
-# Run (needs the app booted, so via `bin/rails runner`; the script re-execs
-# itself in the production config, so you don't have to set RAILS_ENV etc.):
-#   N=8 DUR=3 bin/rails runner script/ractor_appcall_bench.rb
+# Run with plain `ruby` -- the script sets the production flags and boots Rails
+# itself, so no `bin/rails runner` and no exported env are needed:
+#   N=8 DUR=3 ruby script/ractor_appcall_bench.rb
 #
 # Env:
 #   N        worker Ractors (default 1)
@@ -30,25 +30,24 @@
 #              and prints the YJIT / Ractor-barrier frame signature.
 #
 # Capture a profile of the collapse (run with several workers):
-#   N=8 DUR=8 PROFILE=1 bin/rails runner script/ractor_appcall_bench.rb
+#   N=8 DUR=8 PROFILE=1 ruby script/ractor_appcall_bench.rb
 # Then inspect the frames that request the stop-the-world barrier, e.g.:
 #   grep -c rb_jit_vm_lock_then_barrier tmp/ractor_appcall_sample.txt
 #
 # Sweep both YJIT modes:
-#   for n in 1 2 4 8; do N=$n DUR=3 bin/rails runner script/ractor_appcall_bench.rb; done
-#   for n in 1 2 4 8; do N=$n DUR=3 NO_YJIT=1 bin/rails runner script/ractor_appcall_bench.rb; done
+#   for n in 1 2 4 8; do N=$n DUR=3          ruby script/ractor_appcall_bench.rb; done
+#   for n in 1 2 4 8; do N=$n DUR=3 NO_YJIT=1 ruby script/ractor_appcall_bench.rb; done
 
-# bin/rails runner boots Rails *before* this file runs, so the flags this
-# benchmark needs (production env, dummy secret, no forced SSL) can't be set
-# from here after the fact. If they aren't already in the environment, re-exec
-# bin/rails runner with them set -- one quick throwaway boot in the default env,
-# then the real production run -- so you can just run:
-#   bin/rails runner script/ractor_appcall_bench.rb
-REQUIRED_ENV = { "RAILS_ENV" => "production", "SECRET_KEY_BASE_DUMMY" => "1", "DISABLE_SSL" => "1" }
-unless REQUIRED_ENV.all? { |k, v| ENV[k] == v }
-  abort "[bench] re-exec did not set the environment" if ENV["RACTOR_BENCH_REEXEC"] == "1"
-  exec(REQUIRED_ENV.merge("RACTOR_BENCH_REEXEC" => "1"),
-       File.expand_path("../bin/rails", __dir__), "runner", File.expand_path(__FILE__), *ARGV)
+# Set the flags this benchmark needs *before* booting Rails (respecting any the
+# caller already set), then boot the app ourselves. config/environment pulls in
+# Bundler + initializes the app, so plain `ruby script/...` works -- unless the
+# app is already booted (e.g. run under `bin/rails runner`), in which case we
+# skip the boot and use whatever environment is already loaded.
+unless defined?(Rails) && Rails.respond_to?(:application) && Rails.application&.initialized?
+  ENV["RAILS_ENV"]             ||= "production"
+  ENV["SECRET_KEY_BASE_DUMMY"] ||= "1"
+  ENV["DISABLE_SSL"]           ||= "1"
+  require_relative "../config/environment"
 end
 
 require "stringio"
