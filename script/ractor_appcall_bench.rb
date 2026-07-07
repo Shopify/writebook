@@ -15,9 +15,9 @@
 # almost no code for YJIT to compile, proving the cost is YJIT's code
 # management under Ractors, not the act of sharing a frozen callable.
 #
-# Run (needs the app booted, so via `bin/rails runner`):
-#   RAILS_ENV=production SECRET_KEY_BASE_DUMMY=1 DISABLE_SSL=1 \
-#     N=8 DUR=3 bin/rails runner script/ractor_appcall_bench.rb
+# Run (needs the app booted, so via `bin/rails runner`; the script re-execs
+# itself in the production config, so you don't have to set RAILS_ENV etc.):
+#   N=8 DUR=3 bin/rails runner script/ractor_appcall_bench.rb
 #
 # Env:
 #   N        worker Ractors (default 1)
@@ -37,6 +37,19 @@
 # Sweep both YJIT modes:
 #   for n in 1 2 4 8; do N=$n DUR=3 bin/rails runner script/ractor_appcall_bench.rb; done
 #   for n in 1 2 4 8; do N=$n DUR=3 NO_YJIT=1 bin/rails runner script/ractor_appcall_bench.rb; done
+
+# bin/rails runner boots Rails *before* this file runs, so the flags this
+# benchmark needs (production env, dummy secret, no forced SSL) can't be set
+# from here after the fact. If they aren't already in the environment, re-exec
+# bin/rails runner with them set -- one quick throwaway boot in the default env,
+# then the real production run -- so you can just run:
+#   bin/rails runner script/ractor_appcall_bench.rb
+REQUIRED_ENV = { "RAILS_ENV" => "production", "SECRET_KEY_BASE_DUMMY" => "1", "DISABLE_SSL" => "1" }
+unless REQUIRED_ENV.all? { |k, v| ENV[k] == v }
+  abort "[bench] re-exec did not set the environment" if ENV["RACTOR_BENCH_REEXEC"] == "1"
+  exec(REQUIRED_ENV.merge("RACTOR_BENCH_REEXEC" => "1"),
+       File.expand_path("../bin/rails", __dir__), "runner", File.expand_path(__FILE__), *ARGV)
+end
 
 require "stringio"
 
