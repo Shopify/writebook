@@ -23,12 +23,19 @@
 #   N        worker Ractors (default 1)
 #   DUR      seconds to run (default 3)
 #   NOGC=1   GC.disable (rules GC in/out)
+#   WARM=K   run K warmup requests on the main Ractor before fanning out, to
+#            fully warm YJIT's lazy compilation (tells one-time compile cost
+#            apart from a persistent per-request barrier)
 #   LOG=1    show per-request logs (silenced by default; the logger was
 #            measured NOT to be the bottleneck)
 #   NO_YJIT=1  disable YJIT (via the config.yjit guard in production.rb)
 #   PROFILE=1  profile the whole process with macOS `sample` during the run
 #              (writes tmp/ractor_appcall_sample.txt, override with SAMPLE_OUT)
 #              and prints the YJIT / Ractor-barrier frame signature.
+#   STATS=1    enable YJIT stats, warm up on the main Ractor, reset the
+#              counters, then report which YJIT mechanism fires during the
+#              N-Ractor load (compilation vs invalidation vs the multi-Ractor
+#              constant-cache de-opt). Forces YJIT on.
 #
 # Capture a profile of the collapse (run with several workers):
 #   N=8 DUR=8 PROFILE=1 ruby script/ractor_appcall_bench.rb
@@ -38,6 +45,10 @@
 # Sweep both YJIT modes:
 #   for n in 1 2 4 8; do N=$n DUR=3          ruby script/ractor_appcall_bench.rb; done
 #   for n in 1 2 4 8; do N=$n DUR=3 NO_YJIT=1 ruby script/ractor_appcall_bench.rb; done
+
+# STATS=1: turn YJIT stats on *before* anything compiles (we reset the counters
+# after warmup, so what we report is purely the steady-state N-Ractor load).
+RubyVM::YJIT.enable(stats: true) if ENV["STATS"] == "1" && defined?(RubyVM::YJIT.enable)
 
 # Set the flags this benchmark needs *before* booting Rails (respecting any the
 # caller already set), then boot the app ourselves. config/environment pulls in
@@ -84,6 +95,22 @@ end
 st0, _h0, body0 = APP.call(ENVBUILD.call)
 body0.close if body0.respond_to?(:close)
 warn "sanity /up on main -> status=#{st0}"
+
+# WARM: pre-run this many requests on the main Ractor to fully warm YJIT's
+# lazy compilation before fanning out. If the N-Ractor collapse is just
+# cold-start branch/entry-stub compilation (each stub hit takes YJIT's
+# with_vm_lock -> stop-the-world barrier), warming should remove it; if it
+# persists, the barrier is triggered per request in steady state. STATS
+# implies a warmup so its counters reflect only steady state.
+warm = (ENV["WARM"] || (ENV["STATS"] == "1" ? "2000" : "0")).to_i
+if warm > 0
+  warm.times { _s, _h, b = APP.call(ENVBUILD.call); b.close if b.respond_to?(:close) }
+  warn "[warm] #{warm} warmup requests on the main Ractor"
+end
+if ENV["STATS"] == "1" && (RubyVM::YJIT.enabled? rescue false)
+  RubyVM::YJIT.reset_stats!
+  warn "[stats] YJIT counters reset -- now measuring the #{N}-Ractor load"
+end
 
 # Optional: profile the whole process with macOS `sample` for the duration of
 # the run (captures every worker Ractor's native stacks).
@@ -134,5 +161,28 @@ if sampler
     end
   else
     warn "[profile] sample produced no output"
+  end
+end
+
+if ENV["STATS"] == "1" && (s = (RubyVM::YJIT.runtime_stats rescue nil))
+  # After a full main-Ractor warmup + reset, these counters are triggered ONLY
+  # by running the already-compiled code across N Ractors. Watch for:
+  #  - compiled_* / compile_time_ns : ongoing (re)compilation under Ractors
+  #  - invalidate_* / invalidation_count : code being thrown away (each = barrier)
+  #  - opt_getconstant_path_multi_ractor : YJIT can't use its constant inline
+  #    cache with >1 Ractor, so constant reads fall back to the VM-locked path
+  keys = %w[
+    compiled_iseq_count compiled_block_count compiled_branch_count compile_time_ns
+    code_gc_count freed_iseq_count invalidation_count
+    invalidate_constant_state_bump invalidate_constant_ic_fill invalidate_method_lookup
+    invalidate_ep_escape invalidate_bop_redefined invalidate_ractor_spawn invalidate_everything
+    opt_getconstant_path_multi_ractor opt_getconstant_path_ic_miss
+    side_exit_count total_exit_count
+  ]
+  warn "[stats] YJIT activity during the #{N}-Ractor load (#{total} requests, #{format('%.0f', total / DUR)} rps):"
+  keys.each do |k|
+    v = s[k]
+    next if v.nil? || v == 0
+    warn format("[stats]   %-34s %14d  (%.2f/req)", k, v, v.to_f / total)
   end
 end
