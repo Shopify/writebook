@@ -25,6 +25,14 @@
 #   NOGC=1   GC.disable (rules GC in/out)
 #   NOLOG=1  raise the logger level so requests don't log (rules the logger out)
 #   NO_YJIT=1  disable YJIT (via the config.yjit guard in production.rb)
+#   PROFILE=1  profile the whole process with macOS `sample` during the run
+#              (writes tmp/ractor_appcall_sample.txt, override with SAMPLE_OUT)
+#              and prints the YJIT / Ractor-barrier frame signature.
+#
+# Capture a profile of the collapse (run with several workers):
+#   N=8 DUR=8 PROFILE=1 bin/rails runner script/ractor_appcall_bench.rb
+# Then inspect the frames that request the stop-the-world barrier, e.g.:
+#   grep -c rb_jit_vm_lock_then_barrier tmp/ractor_appcall_sample.txt
 #
 # Sweep both YJIT modes:
 #   for n in 1 2 4 8; do N=$n DUR=3 bin/rails runner script/ractor_appcall_bench.rb; done
@@ -65,6 +73,22 @@ st0, _h0, body0 = APP.call(ENVBUILD.call)
 body0.close if body0.respond_to?(:close)
 warn "sanity /up on main -> status=#{st0}"
 
+# Optional: profile the whole process with macOS `sample` for the duration of
+# the run (captures every worker Ractor's native stacks).
+sampler = nil
+sample_out = ENV["SAMPLE_OUT"] || File.expand_path("../tmp/ractor_appcall_sample.txt", __dir__)
+if ENV["PROFILE"] == "1"
+  if system("which sample >/dev/null 2>&1")
+    require "fileutils"
+    FileUtils.mkdir_p(File.dirname(sample_out))
+    secs = [DUR.ceil, 1].max
+    sampler = spawn("sample", Process.pid.to_s, secs.to_s, "-file", sample_out, %i[out err] => File::NULL)
+    warn "[profile] sampling pid=#{Process.pid} for #{secs}s -> #{sample_out}"
+  else
+    warn "[profile] macOS `sample` not found; skipping profile"
+  end
+end
+
 done = Ractor::Port.new
 N.times do
   Ractor.new(APP, DUR, done) do |app, dur, done|
@@ -85,3 +109,18 @@ total = 0
 N.times { total += done.receive }
 printf("N=%d nogc=%s  rps=%.0f  per-worker=%.0f  gc_runs=%d\n",
        N, ENV["NOGC"] || "0", total / DUR, total.to_f / DUR / N, GC.stat(:count) - gc0)
+
+if sampler
+  Process.wait(sampler)
+  if File.exist?(sample_out)
+    txt = File.read(sample_out)
+    warn "[profile] wrote #{sample_out} (#{File.size(sample_out)} bytes)"
+    warn "[profile] YJIT / Ractor-barrier signature (occurrences in the profile):"
+    %w[rb_jit_vm_lock_then_barrier rb_ractor_sched_barrier_join vm_lock_enter
+       __psynch_cvwait __psynch_mutexwait].each do |sym|
+      warn format("[profile]   %-32s %d", sym, txt.scan(sym).size)
+    end
+  else
+    warn "[profile] sample produced no output"
+  end
+end
