@@ -70,4 +70,6 @@ Rails.application.configure do
   # jobs (metadata sync, analysis) run on the main Ractor's thread pool without
   # an external broker.
   config.active_job.queue_adapter = ENV.fetch("QUEUE_ADAPTER", "async").to_sym
+
+  config.yjit = false if ENV["NO_YJIT"] == "1"
 end
