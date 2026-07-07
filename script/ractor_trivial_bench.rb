@@ -20,11 +20,17 @@
 #   N        worker Ractors (default 1)
 #   DUR      seconds to run (default 3)
 #   NOGC=1   GC.disable
+#   YJIT=1   enable YJIT (plain ruby starts with it off; there is no runtime
+#            disable, so leave it unset for the YJIT-off run)
 #
-# Sweep:
-#   for n in 1 2 4 8; do N=$n DUR=3 ruby script/ractor_trivial_bench.rb; done
+# Sweep both YJIT modes (this control scales in BOTH -- unlike the Rails app):
+#   for n in 1 2 4 8; do N=$n DUR=3          ruby script/ractor_trivial_bench.rb; done
+#   for n in 1 2 4 8; do N=$n DUR=3 YJIT=1   ruby script/ractor_trivial_bench.rb; done
 
 require "stringio"
+
+RubyVM::YJIT.enable if ENV["YJIT"] == "1" && defined?(RubyVM::YJIT.enable)
+warn "[yjit] enabled=#{(RubyVM::YJIT.enabled? rescue :na)}"
 
 N   = Integer(ENV["N"] || "1")
 DUR = Float(ENV["DUR"] || "3")
