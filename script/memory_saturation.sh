@@ -9,7 +9,9 @@
 #                  which serializes Ractors and collapses multi-core throughput.
 #
 # Both serve the same concurrent /up load (no DB, no auth) on the same Ruby.
-# Reports peak RSS under load, throughput, latency, and the memory gain.
+# Reports peak memory under load (summed PSS on Linux, summed RSS elsewhere),
+# throughput, latency, and the memory gain. PSS avoids double-counting the forked
+# Puma cluster's shared copy-on-write pages, giving a fair vs single-process Kino.
 # Requires the kino gem (Gemfile) and config_kino.ru; runs on Ruby master.
 # Usage:  script/memory_saturation.sh [N ...]           (default: 1 2 4 8)
 set -euo pipefail
@@ -37,7 +39,22 @@ trap cleanup EXIT
 
 wait_up() { for _ in $(seq 1 90); do curl -s -o /dev/null -H "User-Agent: $UA" "http://127.0.0.1:$PORT/up" 2>/dev/null && return 0; sleep 1; done; return 1; }
 alive() { for _ in 1 2 3 4 5; do curl -s -o /dev/null "http://127.0.0.1:$PORT/up" 2>/dev/null && return 0; sleep 0.3; done; return 1; }
-rss_mb() { local m=$1 kids; kids=$(pgrep -P "$m" 2>/dev/null || true); ps -o rss= -p "$m" $kids 2>/dev/null | awk '{s+=$1} END{printf "%.0f", s/1024}'; }
+# On Linux, sum PSS (Proportional Set Size) across the process tree via
+# /proc/<pid>/smaps_rollup: shared copy-on-write pages (huge for a forked Puma
+# cluster) are divided among sharers, so this is the true physical footprint and
+# a fair apples-to-apples vs single-process Kino. Falls back to summed RSS (which
+# double-counts shared pages) where smaps_rollup is unavailable (e.g. macOS).
+HAVE_PSS=0; [ -r /proc/self/smaps_rollup ] && HAVE_PSS=1
+MEM_KIND=$([ "$HAVE_PSS" = 1 ] && echo PSS || echo RSS)
+mem_mb() {
+  local m=$1 kids; kids=$(pgrep -P "$m" 2>/dev/null || true)
+  if [ "$HAVE_PSS" = 1 ]; then
+    { for p in $m $kids; do awk '/^Pss:/{s+=$2} END{print s+0}' "/proc/$p/smaps_rollup" 2>/dev/null; done; } \
+      | awk '{s+=$1} END{printf "%.0f", s/1024}'
+  else
+    ps -o rss= -p "$m" $kids 2>/dev/null | awk '{s+=$1} END{printf "%.0f", s/1024}'
+  fi
+}
 nprocs() { local m=$1; echo $(( 1 + $(pgrep -P "$m" 2>/dev/null | wc -l | tr -d ' ') )); }
 
 boot_puma() { # $1=dir $2=extra env : sets $MASTER (puma master, cwd=$1)
@@ -75,7 +92,7 @@ measure() { # $1=master $2=conc ; echoes "rssMB rps status bad p50 p99"  (endpoi
   PORT="$PORT" ENDPOINT="$ENDPOINT" DURATION="$LOAD_SECS" CONC="$conc" ruby "$APP_DIR/script/mem_load.rb" > "$tmpout" 2>&1 &
   local lp=$! peak=0 cur
   while kill -0 "$lp" 2>/dev/null; do
-    kill -0 "$m" 2>/dev/null && { cur=$(rss_mb "$m"); [ "${cur:-0}" -gt "$peak" ] && peak=$cur; }
+    kill -0 "$m" 2>/dev/null && { cur=$(mem_mb "$m"); [ "${cur:-0}" -gt "$peak" ] && peak=$cur; }
     sleep 0.4
   done
   wait "$lp"
@@ -108,14 +125,16 @@ for N in $SWEEP; do
 done
 echo >&2
 
-ruby - "$rows" "$BASELINE_BRANCH" <<'RUBY'
-rows = File.readlines(ARGV[0]).map(&:split)  # N config procs rss rps stat bad p50 p99
+ruby - "$rows" "$BASELINE_BRANCH" "$MEM_KIND" <<'RUBY'
+rows = File.readlines(ARGV[0]).map(&:split)  # N config procs mem rps stat bad p50 p99
 base = ARGV[1]
+mem_kind = ARGV[2] || "RSS"
+mem_col  = "#{mem_kind.downcase}(MB)"
 def c(s, code) = $stdout.tty? ? "\e[#{code}m#{s}\e[0m" : s.to_s
 ORDER  = %w[puma-cluster kino kino-noyjit]
 LABELS = { "puma-cluster" => "puma-cluster", "kino" => "kino (YJIT on)", "kino-noyjit" => "kino (YJIT off)" }
 failed = false
-printf("%-4s  %-16s %5s %8s %9s %7s %7s %8s   %s\n", "N", "config", "procs", "rss(MB)", "rps", "p50", "p99", "MB/rps", "mem gain")
+printf("%-4s  %-16s %5s %8s %9s %7s %7s %8s   %s\n", "N", "config", "procs", mem_col, "rps", "p50", "p99", "MB/rps", "mem gain")
 puts "-" * 94
 ns = rows.map { |r| r[0].to_i }.uniq.sort
 ns.each do |n|
@@ -149,6 +168,13 @@ end
 puts
 puts "cluster = #{base} (vanilla Writebook, N processes); kino = this build via Kino (N worker Ractors, 1 process)."
 puts "YJIT on vs off isolates YJIT's rb_jit_vm_lock_then_barrier (stop-the-world) contention across Ractors."
-puts "rss = peak RSS under load; p50/p99 = client latency (ms); mem gain = cluster rss / kino rss."
+if mem_kind == "PSS"
+  puts "mem = peak summed PSS under load (Linux /proc/*/smaps_rollup): shared copy-on-write pages"
+  puts "      are divided among sharers, so the forked Puma cluster is not double-counted."
+else
+  puts "mem = peak summed RSS under load (no smaps_rollup, e.g. macOS): shared pages are counted in"
+  puts "      full per process, which OVER-counts the forked Puma cluster. Run on Linux for fair PSS."
+end
+puts "p50/p99 = client latency (ms); mem gain = cluster mem / kino mem."
 exit 1 if failed
 RUBY
